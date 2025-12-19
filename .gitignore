@@ -34,3 +34,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# supabase edge functions (not used in Next.js build)
+supabase/
+
