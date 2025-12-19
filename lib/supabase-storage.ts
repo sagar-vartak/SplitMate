@@ -607,71 +607,32 @@ export const supabaseStorage = {
 
   acceptInvitation: async (token: string, acceptedBy: string): Promise<Group | null> => {
     try {
-      // Get invitation by token
-      const { data: invitationData, error: inviteError } = await supabase
-        .from('group_invites')
-        .select('*')
-        .eq('token', token)
-        .single();
+      // Use the function to accept invitation and add user to group (bypasses RLS)
+      const { data: groupDataArray, error: functionError } = await supabase
+        .rpc('accept_invitation_and_join_group', {
+          invite_token: token,
+          user_id: acceptedBy,
+        });
 
-      if (inviteError || !invitationData) {
+      if (functionError) {
+        console.error('Error accepting invitation:', functionError);
+        throw new Error(functionError.message || 'Failed to accept invitation');
+      }
+
+      if (!groupDataArray || groupDataArray.length === 0) {
         throw new Error('Invalid or expired invitation');
       }
 
-      // Check if expired
-      const expiresAt = new Date(invitationData.expires_at);
-      if (expiresAt < new Date() && invitationData.status === 'pending') {
-        await supabase
-          .from('group_invites')
-          .update({ status: 'expired' })
-          .eq('id', invitationData.id);
-        throw new Error('This invitation has expired');
-      }
-
-      if (invitationData.status !== 'pending') {
-        throw new Error('This invitation has already been used');
-      }
-
-      // Get group
-      const group = await supabaseStorage.getGroup(invitationData.group_id);
-      if (!group) {
-        throw new Error('Group not found');
-      }
-
-      // Check if user is already a member
-      if (group.members.includes(acceptedBy)) {
-        // User is already a member, just mark invitation as accepted
-        await supabase
-          .from('group_invites')
-          .update({
-            status: 'accepted',
-            accepted_at: new Date().toISOString(),
-            accepted_by: acceptedBy,
-          })
-          .eq('id', invitationData.id);
-        return group;
-      }
-
-      // Add user to group
-      const updatedMembers = [...group.members, acceptedBy];
-      const updatedGroup: Group = {
-        ...group,
-        members: updatedMembers,
-      };
-
-      await supabaseStorage.saveGroup(updatedGroup);
-
-      // Mark invitation as accepted
-      await supabase
-        .from('group_invites')
-        .update({
-          status: 'accepted',
-          accepted_at: new Date().toISOString(),
-          accepted_by: acceptedBy,
-        })
-        .eq('id', invitationData.id);
-
-      return updatedGroup;
+      const groupData = groupDataArray[0];
+      return {
+        id: groupData.id,
+        name: groupData.name,
+        description: groupData.description || undefined,
+        members: groupData.members || [],
+        createdAt: groupData.created_at,
+        currency: groupData.currency || 'USD',
+        createdBy: groupData.created_by || undefined,
+      } as Group;
     } catch (error) {
       console.error('Error accepting invitation:', error);
       throw error;

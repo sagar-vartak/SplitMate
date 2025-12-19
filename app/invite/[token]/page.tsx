@@ -26,7 +26,7 @@ export default function InviteAcceptancePage() {
       try {
         setLoading(true);
         
-        // Step 1: Get invitation by token (this works without auth due to RLS policy)
+        // Get invitation by token
         const { data: invitationData, error: inviteError } = await supabase
           .from('group_invites')
           .select('*')
@@ -34,7 +34,6 @@ export default function InviteAcceptancePage() {
           .single();
 
         if (inviteError || !invitationData) {
-          console.error('Error fetching invitation:', inviteError);
           toast.showError('Invalid or expired invitation link');
           setTimeout(() => router.push('/dashboard'), 2000);
           return;
@@ -54,61 +53,19 @@ export default function InviteAcceptancePage() {
           return;
         }
 
-        // Set invitation
         setInvitation(invitationData);
 
-        // Step 2: Get group data using the SECURITY DEFINER function
-        // This bypasses RLS and allows reading group data for valid invitations
+        // Get group data using the function (bypasses RLS)
         const { data: groupDataArray, error: groupError } = await supabase
-          .rpc('get_group_for_invitation', { invitation_token: token });
+          .rpc('get_group_by_invite_token', { invite_token: token });
 
-        if (groupError) {
-          console.error('Error fetching group via function:', groupError);
-          console.error('Token:', token);
-          console.error('Group ID from invitation:', invitationData.group_id);
-          
-          // Fallback: Try to get group directly using the group_id from invitation
-          // This might work if the user is already a member
-          const { data: fallbackGroup, error: fallbackError } = await supabase
-            .from('groups')
-            .select('*')
-            .eq('id', invitationData.group_id)
-            .single();
-          
-          if (fallbackError || !fallbackGroup) {
-            console.error('Fallback also failed:', fallbackError);
-            toast.showError('Group not found. Please check that the invitation link is valid.');
-            setTimeout(() => router.push('/dashboard'), 2000);
-            return;
-          }
-          
-          // Use fallback data
-          const group: Group = {
-            id: fallbackGroup.id,
-            name: fallbackGroup.name,
-            description: fallbackGroup.description || undefined,
-            members: fallbackGroup.members || [],
-            createdAt: fallbackGroup.created_at,
-            currency: fallbackGroup.currency || 'USD',
-            createdBy: fallbackGroup.created_by || undefined,
-          };
-          setGroup(group);
-          return;
-        }
-
-        if (!groupDataArray || groupDataArray.length === 0) {
-          console.error('Function returned empty result');
-          console.error('Token:', token);
-          console.error('Group ID from invitation:', invitationData.group_id);
+        if (groupError || !groupDataArray || groupDataArray.length === 0) {
           toast.showError('Group not found. Please check that the invitation link is valid.');
           setTimeout(() => router.push('/dashboard'), 2000);
           return;
         }
 
-        // The function returns a table, so we get the first row
         const groupData = groupDataArray[0];
-
-        // Transform to Group type
         const group: Group = {
           id: groupData.id,
           name: groupData.name,
