@@ -101,14 +101,7 @@ BEGIN
   
   -- Check if user is already a member
   IF user_id = ANY(current_members) THEN
-    -- Just mark invitation as accepted
-    UPDATE group_invites
-    SET status = 'accepted',
-        accepted_at = NOW(),
-        accepted_by = user_id
-    WHERE token = invite_token;
-    
-    -- Return group
+    -- User is already a member, just return the group (don't mark as accepted so link stays valid)
     RETURN QUERY
     SELECT 
       g.id,
@@ -125,16 +118,12 @@ BEGIN
   
   -- Add user to group members array
   UPDATE groups
-  SET members = array_append(members, user_id),
+  SET members = array_append(groups.members, user_id),
       updated_at = NOW()
-  WHERE id = group_id_val;
+  WHERE groups.id = group_id_val;
   
-  -- Mark invitation as accepted
-  UPDATE group_invites
-  SET status = 'accepted',
-      accepted_at = NOW(),
-      accepted_by = user_id
-  WHERE token = invite_token;
+  -- Don't mark invitation as accepted - keep it valid for other users until expiry
+  -- The link remains valid for 3 days and can be used by multiple users
   
   -- Return updated group
   RETURN QUERY

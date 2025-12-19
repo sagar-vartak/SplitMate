@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
 import { supabaseAuth } from '@/lib/supabase-auth';
@@ -20,6 +20,7 @@ export default function InviteAcceptancePage() {
   const [accepting, setAccepting] = useState(false);
   const [invitation, setInvitation] = useState<any>(null);
   const [group, setGroup] = useState<Group | null>(null);
+  const isAcceptingRef = useRef(false); // Ref to prevent multiple calls
 
   useEffect(() => {
     const loadInvitation = async () => {
@@ -47,11 +48,13 @@ export default function InviteAcceptancePage() {
           return;
         }
 
-        if (invitationData.status !== 'pending') {
-          toast.showError('This invitation has already been used');
-          setTimeout(() => router.push('/dashboard'), 2000);
-          return;
-        }
+    // Allow accepting even if status is not pending (link stays valid for 3 days)
+    // Only check if it's expired
+    if (invitationData.status === 'expired') {
+      toast.showError('This invitation has expired');
+      setTimeout(() => router.push('/dashboard'), 2000);
+      return;
+    }
 
         setInvitation(invitationData);
 
@@ -98,6 +101,11 @@ export default function InviteAcceptancePage() {
   }, [token, router, toast]);
 
   const handleAccept = async () => {
+    // Prevent multiple calls
+    if (isAcceptingRef.current || accepting) {
+      return;
+    }
+
     if (!currentUser) {
       // Redirect to login with return URL
       router.push(`/?invite=${token}`);
@@ -109,12 +117,22 @@ export default function InviteAcceptancePage() {
       return;
     }
 
+    // Check if invitation is expired (but allow accepting even if already used by others)
+    if (invitation.status === 'expired') {
+      toast.showError('This invitation has expired');
+      return;
+    }
+
     try {
+      isAcceptingRef.current = true;
       setAccepting(true);
+      
       const updatedGroup = await supabaseStorage.acceptInvitation(token, currentUser.id);
       
       if (updatedGroup) {
         toast.showSuccess(`Successfully joined "${group.name}"! 🎉`);
+        // Update invitation status locally to prevent re-acceptance
+        setInvitation({ ...invitation, status: 'accepted' });
         setTimeout(() => {
           router.push(`/groups/${group.id}`);
         }, 1000);
@@ -124,6 +142,7 @@ export default function InviteAcceptancePage() {
       toast.showError(error.message || 'Failed to accept invitation. Please try again.');
     } finally {
       setAccepting(false);
+      isAcceptingRef.current = false;
     }
   };
 

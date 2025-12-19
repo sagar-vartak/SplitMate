@@ -1293,7 +1293,7 @@ function ShareLinkForm({
       
       // Save invitation to database (no email required)
       const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 30); // 30 days expiry
+      expiresAt.setDate(expiresAt.getDate() + 3); // 3 days expiry
 
       const invitationId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
@@ -1375,7 +1375,7 @@ function ShareLinkForm({
 
         <div className="bg-blue-50 border-l-4 border-blue-400 p-4 rounded">
           <p className="text-sm text-blue-800">
-            <strong>How it works:</strong> Anyone with this link can join your group. The link expires in 30 days. Share it via any method you prefer (messaging, email, etc.).
+            <strong>How it works:</strong> Anyone with this link can join your group. The link expires in 3 days. Share it via any method you prefer (messaging, email, etc.).
           </p>
         </div>
 
