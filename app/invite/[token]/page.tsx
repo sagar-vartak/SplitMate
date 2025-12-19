@@ -26,15 +26,27 @@ export default function InviteAcceptancePage() {
       try {
         setLoading(true);
         
-        // Get invitation by token directly
-        const { data: { session } } = await supabase.auth.getSession();
+        // Get invitation by token directly (this works without auth due to RLS policy)
+        // Use a join to get group data through the invitation
         const { data: invitationData, error: inviteError } = await supabase
           .from('group_invites')
-          .select('*')
+          .select(`
+            *,
+            groups!inner (
+              id,
+              name,
+              description,
+              members,
+              created_at,
+              currency,
+              created_by
+            )
+          `)
           .eq('token', token)
           .single();
 
         if (inviteError || !invitationData) {
+          console.error('Error fetching invitation:', inviteError);
           toast.showError('Invalid or expired invitation link');
           setTimeout(() => router.push('/dashboard'), 2000);
           return;
@@ -54,17 +66,32 @@ export default function InviteAcceptancePage() {
           return;
         }
 
-        setInvitation(invitationData);
-
-        // Get group
-        const groupData = await supabaseStorage.getGroup(invitationData.group_id);
+        // Extract group data from the join (groups is returned as an object with !inner)
+        const groupData = invitationData.groups as any;
+        
         if (!groupData) {
-          toast.showError('Group not found');
+          console.error('Group data not found in invitation join');
+          toast.showError('Group not found. Please check that the invitation link is valid.');
           setTimeout(() => router.push('/dashboard'), 2000);
           return;
         }
 
-        setGroup(groupData);
+        // Set invitation (without groups to avoid circular reference)
+        const { groups, ...inviteData } = invitationData;
+        setInvitation(inviteData);
+
+        // Transform to Group type
+        const group: Group = {
+          id: groupData.id,
+          name: groupData.name,
+          description: groupData.description || undefined,
+          members: groupData.members || [],
+          createdAt: groupData.created_at,
+          currency: groupData.currency || 'USD',
+          createdBy: groupData.created_by || undefined,
+        };
+
+        setGroup(group);
 
         // Check if user is logged in
         const user = await supabaseAuth.getCurrentUser();

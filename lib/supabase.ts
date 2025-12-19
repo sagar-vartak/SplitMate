@@ -36,40 +36,8 @@ if (!supabaseUrl || !supabaseAnonKey) {
     },
   });
   
-  // Initialize session on client side
-  // This ensures Supabase reads the session from localStorage immediately
-  if (typeof window !== 'undefined') {
-    // Immediately check for existing session
-    const initSession = async () => {
-      try {
-        const { data: { session }, error } = await supabase.auth.getSession();
-        if (error) {
-          console.error('Error getting initial session:', error);
-          return;
-        }
-        if (session) {
-          console.log('✅ Session initialized from localStorage:', session.user.email);
-          console.log('✅ Session expires at:', new Date(session.expires_at! * 1000).toLocaleString());
-        } else {
-          console.log('ℹ️ No session found in localStorage on init');
-        }
-      } catch (error) {
-        console.error('Error initializing session:', error);
-      }
-    };
-    
-    // Run immediately
-    initSession();
-    
-    // Also set up a listener for session changes
-    supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
-        console.log('✅ Auth event:', event, session?.user?.email);
-      } else if (event === 'SIGNED_OUT') {
-        console.log('ℹ️ User signed out');
-      }
-    });
-  }
+  // Note: Session initialization is handled in client components, not here
+  // This prevents SSR issues and build errors
 }
 
 export { supabase };
