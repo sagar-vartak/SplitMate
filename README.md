@@ -1,6 +1,6 @@
-# Splitwise Clone
+# SplitMate
 
-A Next.js application for splitting expenses with friends, similar to Splitwise. All data is stored locally in the browser's localStorage.
+A Next.js application for splitting expenses with friends. All data is stored in Supabase cloud database.
 
 ## Features
 

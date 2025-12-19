@@ -26,7 +26,7 @@
 2. **Create a Project** (if you don't have one)
    - Click the project dropdown at the top
    - Click **"New Project"**
-   - Enter a name (e.g., "Splitwise Clone")
+   - Enter a name (e.g., "SplitMate")
    - Click **"Create"**
 
 3. **Enable Google+ API**
@@ -39,7 +39,7 @@
    - Select **"External"** (unless you have a Google Workspace)
    - Click **"Create"**
    - Fill in:
-     - **App name**: Splitwise Clone
+     - **App name**: SplitMate
      - **User support email**: Your email
      - **Developer contact information**: Your email
    - Click **"Save and Continue"**
@@ -51,7 +51,7 @@
    - Go to **APIs & Services** → **Credentials**
    - Click **"Create Credentials"** → **"OAuth client ID"**
    - Select **"Web application"**
-   - Name: `Splitwise Clone Web`
+   - Name: `SplitMate Web`
    - **Authorized JavaScript origins**: Add:
      ```
      https://YOUR_PROJECT_REF.supabase.co

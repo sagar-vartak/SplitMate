@@ -5,12 +5,15 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { supabaseAuth } from '@/lib/supabase-auth';
 import { User } from '@/types';
+import { useToast } from '@/components/ToastContainer';
 
 export default function Home() {
   const router = useRouter();
+  const toast = useToast();
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [signingIn, setSigningIn] = useState(false);
+  const [hasShownWelcome, setHasShownWelcome] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -43,6 +46,10 @@ export default function Home() {
             clearTimeout(timeoutId);
             setCurrentUser(user);
             setLoading(false);
+            if (!hasShownWelcome) {
+              toast.showSuccess(`Welcome back, ${user.name}! 👋`);
+              setHasShownWelcome(true);
+            }
             router.push('/dashboard');
             return;
           }
@@ -60,18 +67,22 @@ export default function Home() {
     };
 
     // Set up auth state listener (for real-time changes)
-    authUnsubscribe = supabaseAuth.onAuthStateChanged((user) => {
-      if (!mounted) return;
-      
-      console.log('Auth state changed callback:', user ? user.email : 'no user');
-      clearTimeout(timeoutId);
-      setCurrentUser(user);
-      setLoading(false);
-      
-      if (user) {
-        router.push('/dashboard');
-      }
-    });
+           authUnsubscribe = supabaseAuth.onAuthStateChanged((user) => {
+             if (!mounted) return;
+
+             console.log('Auth state changed callback:', user ? user.email : 'no user');
+             clearTimeout(timeoutId);
+             setCurrentUser(user);
+             setLoading(false);
+
+             if (user && !hasShownWelcome) {
+               toast.showSuccess(`Welcome, ${user.name}! 🎉`);
+               setHasShownWelcome(true);
+               router.push('/dashboard');
+             } else if (user) {
+               router.push('/dashboard');
+             }
+           });
 
     // Do immediate check
     checkSession();
@@ -96,7 +107,7 @@ export default function Home() {
         return;
       }
       console.error('Sign in error:', error);
-      alert('Failed to sign in with Google. Please try again.');
+      toast.showError('Failed to sign in with Google. Please try again.');
       setSigningIn(false);
     }
   };

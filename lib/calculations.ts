@@ -1,5 +1,10 @@
 import { Expense, Balance, Settlement } from '@/types';
 
+// Simple ID generator for settlements
+function generateSettlementId(): string {
+  return `settlement-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
 export function calculateBalances(expenses: Expense[]): Map<string, number> {
   const balances = new Map<string, number>();
 
@@ -80,7 +85,10 @@ export function calculateGroupBalances(expenses: Expense[], groupMembers: string
  * This minimizes the number of transactions needed to settle all debts
  */
 export function calculateSettlements(balances: Balance[]): Settlement[] {
-  if (balances.length === 0) return [];
+  if (balances.length === 0) {
+    console.log('📊 calculateSettlements: No balances provided');
+    return [];
+  }
 
   const balanceMap = new Map<string, number>();
   
@@ -95,15 +103,22 @@ export function calculateSettlements(balances: Balance[]): Settlement[] {
   const debtors: { userId: string; amount: number }[] = [];
 
   balanceMap.forEach((amount, userId) => {
-    if (amount > 0.01) {
-      creditors.push({ userId, amount });
-    } else if (amount < -0.01) {
-      debtors.push({ userId, amount: Math.abs(amount) });
+    // Use a smaller threshold to catch more balances (0.001 instead of 0.01)
+    // This helps with floating point precision issues
+    const roundedAmount = Math.round(amount * 1000) / 1000;
+    if (roundedAmount > 0.001) {
+      creditors.push({ userId, amount: roundedAmount });
+    } else if (roundedAmount < -0.001) {
+      debtors.push({ userId, amount: Math.abs(roundedAmount) });
     }
   });
 
+  console.log('📊 calculateSettlements: Creditors:', creditors.length, creditors);
+  console.log('📊 calculateSettlements: Debtors:', debtors.length, debtors);
+
   // If no creditors or debtors, everyone is settled
   if (creditors.length === 0 || debtors.length === 0) {
+    console.log('📊 calculateSettlements: No creditors or debtors, returning empty array');
     return [];
   }
 
@@ -126,24 +141,28 @@ export function calculateSettlements(balances: Balance[]): Settlement[] {
     // Calculate how much this debtor should pay to this creditor
     const settlementAmount = Math.min(creditor.amount, debtor.amount);
 
-    if (settlementAmount > 0.01) {
+    // Use smaller threshold (0.001) to catch more settlements
+    if (settlementAmount > 0.001) {
+      // Round to 2 decimal places for currency
+      const roundedAmount = Math.round(settlementAmount * 100) / 100;
       settlements.push({
+        id: generateSettlementId(),
         from: debtor.userId,
         to: creditor.userId,
-        amount: Math.round(settlementAmount * 100) / 100,
+        amount: roundedAmount,
         groupId,
         createdAt: new Date().toISOString(),
       });
 
-      // Update remaining amounts
+      // Update remaining amounts (use precise calculation)
       creditor.amount -= settlementAmount;
       debtor.amount -= settlementAmount;
 
-      // Move to next creditor/debtor if fully settled
-      if (creditor.amount < 0.01) {
+      // Move to next creditor/debtor if fully settled (use smaller threshold)
+      if (Math.abs(creditor.amount) < 0.001) {
         creditorIndex++;
       }
-      if (debtor.amount < 0.01) {
+      if (Math.abs(debtor.amount) < 0.001) {
         debtorIndex++;
       }
     } else {

@@ -1,6 +1,6 @@
-# Google Cloud Setup Guide for Splitwise Clone
+# Google Cloud Setup Guide for SplitMate
 
-This guide will walk you through setting up Google Cloud Firestore (database) and Google OAuth (authentication) for your Splitwise Clone app.
+This guide will walk you through setting up Google Cloud Firestore (database) and Google OAuth (authentication) for your SplitMate app.
 
 ## Prerequisites
 
@@ -15,7 +15,7 @@ This guide will walk you through setting up Google Cloud Firestore (database) an
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
 2. Click on the project dropdown at the top
 3. Click **"New Project"**
-4. Enter project name: `splitwise-clone` (or any name you prefer)
+4. Enter project name: `splitmate` (or any name you prefer)
 5. Click **"Create"**
 6. Wait for the project to be created and select it
 
@@ -104,7 +104,7 @@ service cloud.firestore {
 3. Select **"External"** (unless you have a Google Workspace account)
 4. Click **"Create"**
 5. Fill in the required information:
-   - **App name**: `Splitwise Clone`
+   - **App name**: `SplitMate`
    - **User support email**: Your email
    - **Developer contact information**: Your email
 6. Click **"Save and Continue"**
@@ -118,7 +118,7 @@ service cloud.firestore {
 1. In Google Cloud Console, go to **"APIs & Services"** → **"Credentials"**
 2. Click **"Create Credentials"** → **"OAuth client ID"**
 3. Select **"Web application"**
-4. Enter a name: `Splitwise Clone Web Client`
+4. Enter a name: `SplitMate Web Client`
 5. Add **Authorized JavaScript origins**:
    - `http://localhost:3000`
    - `http://localhost:3001` (if you use a different port)
@@ -138,7 +138,7 @@ service cloud.firestore {
 3. Scroll down to **"Your apps"** section
 4. Click the **"</>"** (Web) icon to add a web app
 5. Register app:
-   - App nickname: `Splitwise Clone Web`
+   - App nickname: `SplitMate Web`
    - Check **"Also set up Firebase Hosting"** (optional)
 6. Click **"Register app"**
 7. **Copy the Firebase configuration object** - it looks like this:

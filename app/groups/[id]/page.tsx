@@ -5,13 +5,16 @@ import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
 import { supabaseAuth } from '@/lib/supabase-auth';
 import { supabaseStorage } from '@/lib/supabase-storage';
+import { supabase } from '@/lib/supabase';
 import { calculateGroupBalances, calculateSettlements } from '@/lib/calculations';
 import { User, Group, Expense, Balance, Settlement } from '@/types';
+import { useToast } from '@/components/ToastContainer';
 
 export default function GroupPage() {
   const router = useRouter();
   const params = useParams();
   const groupId = params.id as string;
+  const toast = useToast();
 
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [group, setGroup] = useState<Group | null>(null);
@@ -21,15 +24,16 @@ export default function GroupPage() {
   const [settlements, setSettlements] = useState<Settlement[]>([]);
   const [showExpenseForm, setShowExpenseForm] = useState(false);
   const [expenseToEdit, setExpenseToEdit] = useState<Expense | null>(null);
-  const [showAddMemberForm, setShowAddMemberForm] = useState(false);
   const [showGroupSettings, setShowGroupSettings] = useState(false);
   const [showInviteForm, setShowInviteForm] = useState(false);
   const [loading, setLoading] = useState(true);
+  const welcomeShownRef = { current: false };
 
   useEffect(() => {
     let mounted = true;
     let expensesUnsubscribe: (() => void) | null = null;
     let groupsUnsubscribe: (() => void) | null = null;
+    let settlementsUnsubscribe: (() => void) | null = null;
     let authUnsubscribe: (() => void) | null = null;
     let initialized = false;
 
@@ -53,8 +57,8 @@ export default function GroupPage() {
         
         setGroup(foundGroup);
 
-        // Load all users
-        const allUsers = await supabaseStorage.getUsers();
+        // Load users who are in the same groups as current user
+        const allUsers = await supabaseStorage.getUsers(user.id);
         if (!mounted) return;
         setUsers(allUsers);
 
@@ -64,42 +68,217 @@ export default function GroupPage() {
         setExpenses(groupExpenses);
         const groupBalances = calculateGroupBalances(groupExpenses, foundGroup.members);
         setBalances(groupBalances);
-        const groupSettlements = calculateSettlements(groupBalances).map(s => ({
-          ...s,
-          createdAt: new Date().toISOString(),
-        }));
-        setSettlements(groupSettlements);
+        
+        // Load saved settlements from database
+        const savedSettlements = await supabaseStorage.getSettlementsByGroup(groupId);
+        if (!mounted) return;
+        
+        // Calculate new settlements from current balances
+        const calculatedSettlements = calculateSettlements(groupBalances);
+        
+        // Merge saved settlements with calculated ones
+        // Strategy:
+        // 1. Keep all marked (paid) settlements as historical records
+        // 2. Always show current calculated settlements (they represent what needs to be paid NOW)
+        // 3. Only use saved settlement ID if it matches exactly and is unmarked
+        const markedSettlements = savedSettlements.filter(s => s.markedAsPaid);
+        const mergedSettlements: Settlement[] = [];
+        
+        // First, add all marked settlements (historical records)
+        mergedSettlements.push(...markedSettlements);
+        
+        // Then, ALWAYS add calculated settlements (they represent current balances)
+        // Even if there's a marked settlement with the same amount, we still need to show
+        // the current calculated settlement because balances may have changed after marking
+        calculatedSettlements.forEach(calcSettlement => {
+          // Round amounts for comparison to avoid floating point precision issues
+          const calcAmountRounded = Math.round(calcSettlement.amount * 100) / 100;
+          
+          // Check if this calculated settlement matches any unmarked saved settlement
+          // (to reuse the ID for consistency)
+          const savedSettlement = savedSettlements.find(
+            s => {
+              if (s.markedAsPaid) return false; // Don't match marked settlements
+              const savedAmountRounded = Math.round(s.amount * 100) / 100;
+              return s.from === calcSettlement.from &&
+                     s.to === calcSettlement.to &&
+                     Math.abs(savedAmountRounded - calcAmountRounded) < 0.005 // Use 0.5 cents tolerance
+            }
+          );
+          
+          // Always add calculated settlements - they represent what needs to be paid now
+          // Use saved settlement ID if it exists and is unmarked (for consistency)
+          mergedSettlements.push({
+            ...calcSettlement,
+            amount: calcAmountRounded, // Use rounded amount
+            id: savedSettlement?.id || calcSettlement.id,
+            createdAt: savedSettlement?.createdAt || calcSettlement.createdAt || new Date().toISOString(),
+          });
+        });
+        
+        setSettlements(mergedSettlements);
 
         // Subscribe to expenses for real-time updates
-        expensesUnsubscribe = supabaseStorage.subscribeToExpenses(groupId, (updatedExpenses) => {
+        expensesUnsubscribe = supabaseStorage.subscribeToExpenses(groupId, async (updatedExpenses) => {
           if (!mounted) return;
+          console.log('Expenses subscription triggered, updating balances...', updatedExpenses.length);
           setExpenses(updatedExpenses);
-          const currentGroup = foundGroup; // Use the group from closure, not state
-          const groupBalances = calculateGroupBalances(updatedExpenses, currentGroup.members);
-          setBalances(groupBalances);
-          const groupSettlements = calculateSettlements(groupBalances).map(s => ({
-            ...s,
-            createdAt: new Date().toISOString(),
-          }));
-          setSettlements(groupSettlements);
+          
+          // Get current group members from state (or use foundGroup as fallback)
+          // We need to access the current group state, so we'll use a ref or get it from state
+          setGroup(currentGroup => {
+            const groupToUse = currentGroup || foundGroup;
+            const groupBalances = calculateGroupBalances(updatedExpenses, groupToUse.members);
+            setBalances(groupBalances);
+            
+            // Reload saved settlements and merge with calculated ones
+            supabaseStorage.getSettlementsByGroup(groupId).then(savedSettlements => {
+              if (!mounted) return;
+              
+              // Calculate new settlements from current balances
+              const calculatedSettlements = calculateSettlements(groupBalances);
+              
+              // Merge strategy: keep marked settlements, always add current calculated ones
+              const markedSettlements = savedSettlements.filter(s => s.markedAsPaid);
+              const mergedSettlements: Settlement[] = [];
+              
+              // Add all marked settlements (historical records)
+              mergedSettlements.push(...markedSettlements);
+              
+              // Always add calculated settlements (they represent current balances)
+              calculatedSettlements.forEach(calcSettlement => {
+                // Round amounts for comparison to avoid floating point precision issues
+                const calcAmountRounded = Math.round(calcSettlement.amount * 100) / 100;
+                
+                const savedSettlement = savedSettlements.find(
+                  s => {
+                    if (s.markedAsPaid) return false; // Don't match marked settlements
+                    const savedAmountRounded = Math.round(s.amount * 100) / 100;
+                    return s.from === calcSettlement.from &&
+                           s.to === calcSettlement.to &&
+                           Math.abs(savedAmountRounded - calcAmountRounded) < 0.005
+                  }
+                );
+                
+                // Always add calculated settlements
+                mergedSettlements.push({
+                  ...calcSettlement,
+                  amount: calcAmountRounded, // Use rounded amount
+                  id: savedSettlement?.id || calcSettlement.id,
+                  createdAt: savedSettlement?.createdAt || calcSettlement.createdAt || new Date().toISOString(),
+                });
+              });
+              
+              setSettlements(mergedSettlements);
+            });
+            
+            return currentGroup || foundGroup;
+          });
+        });
+
+        // Subscribe to settlements for real-time updates
+        settlementsUnsubscribe = supabaseStorage.subscribeToSettlements(groupId, async (updatedSettlements) => {
+          if (!mounted) return;
+          console.log('Settlements subscription triggered, updating settlements...', updatedSettlements.length);
+          
+          // Get current expenses and group to recalculate balances
+          setExpenses(prevExpenses => {
+            setGroup(currentGroup => {
+              const groupToUse = currentGroup || foundGroup;
+              if (groupToUse) {
+                const groupBalances = calculateGroupBalances(prevExpenses, groupToUse.members);
+                setBalances(groupBalances);
+                
+                // Merge updated settlements with calculated ones
+                const calculatedSettlements = calculateSettlements(groupBalances);
+                const markedSettlements = updatedSettlements.filter(s => s.markedAsPaid);
+                const mergedSettlements: Settlement[] = [];
+                
+                // Add all marked settlements (historical records)
+                mergedSettlements.push(...markedSettlements);
+                
+                // Always add calculated settlements (they represent current balances)
+                calculatedSettlements.forEach(calcSettlement => {
+                  // Round amounts for comparison to avoid floating point precision issues
+                  const calcAmountRounded = Math.round(calcSettlement.amount * 100) / 100;
+                  
+                  const savedSettlement = updatedSettlements.find(
+                    s => {
+                      if (s.markedAsPaid) return false; // Don't match marked settlements
+                      const savedAmountRounded = Math.round(s.amount * 100) / 100;
+                      return s.from === calcSettlement.from &&
+                             s.to === calcSettlement.to &&
+                             Math.abs(savedAmountRounded - calcAmountRounded) < 0.005
+                    }
+                  );
+                  
+                  // Always add calculated settlements
+                  mergedSettlements.push({
+                    ...calcSettlement,
+                    amount: calcAmountRounded, // Use rounded amount
+                    id: savedSettlement?.id || calcSettlement.id,
+                    createdAt: savedSettlement?.createdAt || calcSettlement.createdAt || new Date().toISOString(),
+                  });
+                });
+                
+                setSettlements(mergedSettlements);
+              }
+              return currentGroup || foundGroup;
+            });
+            return prevExpenses;
+          });
         });
 
         // Subscribe to group updates
-        groupsUnsubscribe = supabaseStorage.subscribeToGroups(user.id, (groups) => {
+        groupsUnsubscribe = supabaseStorage.subscribeToGroups(user.id, async (groups) => {
           if (!mounted) return;
           const updatedGroup = groups.find(g => g.id === groupId);
           if (updatedGroup) {
             setGroup(updatedGroup);
             // Recalculate with new members - use current expenses from state
-            // We'll get the latest expenses from the subscription
             setExpenses(prevExpenses => {
               const groupBalances = calculateGroupBalances(prevExpenses, updatedGroup.members);
               setBalances(groupBalances);
-              const groupSettlements = calculateSettlements(groupBalances).map(s => ({
-                ...s,
-                createdAt: new Date().toISOString(),
-              }));
-              setSettlements(groupSettlements);
+              
+              // Reload saved settlements and merge with calculated ones
+              supabaseStorage.getSettlementsByGroup(groupId).then(savedSettlements => {
+                if (!mounted) return;
+                const calculatedSettlements = calculateSettlements(groupBalances);
+                
+                // Merge strategy: keep marked settlements, add new calculated ones
+                const markedSettlements = savedSettlements.filter(s => s.markedAsPaid);
+                const mergedSettlements: Settlement[] = [];
+                
+                // Add all marked settlements (historical records)
+                mergedSettlements.push(...markedSettlements);
+                
+                // Always add calculated settlements (they represent current balances)
+                calculatedSettlements.forEach(calcSettlement => {
+                  // Round amounts for comparison to avoid floating point precision issues
+                  const calcAmountRounded = Math.round(calcSettlement.amount * 100) / 100;
+                  
+                  const savedSettlement = savedSettlements.find(
+                    s => {
+                      if (s.markedAsPaid) return false; // Don't match marked settlements
+                      const savedAmountRounded = Math.round(s.amount * 100) / 100;
+                      return s.from === calcSettlement.from &&
+                             s.to === calcSettlement.to &&
+                             Math.abs(savedAmountRounded - calcAmountRounded) < 0.005
+                    }
+                  );
+                  
+                  // Always add calculated settlements
+                  mergedSettlements.push({
+                    ...calcSettlement,
+                    amount: calcAmountRounded, // Use rounded amount
+                    id: savedSettlement?.id || calcSettlement.id,
+                    createdAt: savedSettlement?.createdAt || calcSettlement.createdAt || new Date().toISOString(),
+                  });
+                });
+                
+                setSettlements(mergedSettlements);
+              });
+              
               return prevExpenses;
             });
           }
@@ -108,6 +287,29 @@ export default function GroupPage() {
         initialized = true;
         setLoading(false);
         console.log('GroupPage: Group data loaded successfully');
+        
+        // Show welcome message when group loads (only once per page load)
+        if (foundGroup && !welcomeShownRef.current) {
+          toast.showInfo(`Welcome to "${foundGroup.name}"! 👋`);
+          welcomeShownRef.current = true;
+        }
+        
+        // Debug: Log settlements for troubleshooting
+        console.log('🔍 Initial settlements DEBUG:', {
+          total: mergedSettlements.length,
+          calculated: calculatedSettlements.length,
+          marked: markedSettlements.length,
+          saved: savedSettlements.length,
+          balances: groupBalances.map(b => ({ userId: b.userId, amount: b.amount })),
+          calculatedSettlements: calculatedSettlements,
+          savedSettlements: savedSettlements,
+          mergedSettlements: mergedSettlements
+        });
+        
+        // Additional check: Are balances actually non-zero?
+        const hasNonZeroBalances = groupBalances.some(b => Math.abs(b.amount) > 0.01);
+        console.log('💰 Has non-zero balances?', hasNonZeroBalances);
+        console.log('📊 All balances:', groupBalances);
       } catch (error) {
         console.error('Error loading group data:', error);
         if (mounted) {
@@ -135,6 +337,7 @@ export default function GroupPage() {
     return () => {
       mounted = false;
       initialized = false;
+      console.log('Cleaning up subscriptions...');
       if (authUnsubscribe) {
         authUnsubscribe();
       }
@@ -143,6 +346,9 @@ export default function GroupPage() {
       }
       if (groupsUnsubscribe) {
         groupsUnsubscribe();
+      }
+      if (settlementsUnsubscribe) {
+        settlementsUnsubscribe();
       }
     };
   }, [groupId, router]);
@@ -170,20 +376,139 @@ export default function GroupPage() {
     });
   };
 
+  // Function to manually refresh all data (fallback if subscriptions don't work)
+  const refreshGroupData = async () => {
+    if (!group || !currentUser) return;
+    
+    try {
+      // Reload expenses
+      const groupExpenses = await supabaseStorage.getExpensesByGroup(groupId);
+      setExpenses(groupExpenses);
+      
+      // Recalculate balances
+      const groupBalances = calculateGroupBalances(groupExpenses, group.members);
+      setBalances(groupBalances);
+      
+      // Reload settlements
+      const savedSettlements = await supabaseStorage.getSettlementsByGroup(groupId);
+      const calculatedSettlements = calculateSettlements(groupBalances);
+      
+      console.log('🔄 Refresh: Calculated settlements:', calculatedSettlements.length, calculatedSettlements);
+      console.log('🔄 Refresh: Saved settlements:', savedSettlements.length, savedSettlements);
+      console.log('🔄 Refresh: Balances:', groupBalances.map(b => ({ userId: b.userId, amount: b.amount })));
+      console.log('🔄 Refresh: Expenses count:', groupExpenses.length);
+      
+      // Merge settlements
+      const markedSettlements = savedSettlements.filter(s => s.markedAsPaid);
+      const mergedSettlements: Settlement[] = [];
+      
+      // First, add all marked settlements (historical records)
+      mergedSettlements.push(...markedSettlements);
+      
+      // Always add calculated settlements (they represent current balances)
+      calculatedSettlements.forEach(calcSettlement => {
+        // Round amounts for comparison to avoid floating point precision issues
+        const calcAmountRounded = Math.round(calcSettlement.amount * 100) / 100;
+        
+        const savedSettlement = savedSettlements.find(
+          s => {
+            if (s.markedAsPaid) return false; // Don't match marked settlements
+            const savedAmountRounded = Math.round(s.amount * 100) / 100;
+            return s.from === calcSettlement.from &&
+                   s.to === calcSettlement.to &&
+                   Math.abs(savedAmountRounded - calcAmountRounded) < 0.005
+          }
+        );
+        
+        // Always add calculated settlements
+        mergedSettlements.push({
+          ...calcSettlement,
+          amount: calcAmountRounded, // Use rounded amount
+          id: savedSettlement?.id || calcSettlement.id || `settlement-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          createdAt: savedSettlement?.createdAt || calcSettlement.createdAt || new Date().toISOString(),
+        });
+      });
+      
+      console.log('Refresh: Merged settlements:', mergedSettlements.length, mergedSettlements);
+      setSettlements(mergedSettlements);
+    } catch (error) {
+      console.error('Error refreshing group data:', error);
+    }
+  };
+
   const handleMarkSettlement = async (settlement: Settlement, index: number) => {
-    if (!currentUser) return;
+    if (!currentUser || !group) return;
     
-    const updatedSettlements = [...settlements];
-    updatedSettlements[index] = {
-      ...settlement,
-      markedAsPaid: !settlement.markedAsPaid,
-      markedBy: !settlement.markedAsPaid ? currentUser.id : undefined,
-      markedAt: !settlement.markedAsPaid ? new Date().toISOString() : undefined,
-    };
-    setSettlements(updatedSettlements);
+    // If already marked as paid, don't allow unmarking (settlements are one-way)
+    if (settlement.markedAsPaid) {
+      return;
+    }
     
-    // In a real app, you'd save this to the database
-    // For now, we'll just update the local state
+    try {
+      // Mark settlement as paid
+      const updatedSettlement: Settlement = {
+        ...settlement,
+        id: settlement.id || `settlement-${Date.now()}-${index}`,
+        markedAsPaid: true,
+        markedBy: currentUser.id,
+        markedAt: new Date().toISOString(),
+        createdAt: settlement.createdAt || new Date().toISOString(),
+      };
+      
+      // Save settlement to database
+      await supabaseStorage.saveSettlement(updatedSettlement);
+      
+      // Create an expense entry for the settlement
+      // This expense represents the settlement payment and will appear in the expenses list
+      // The expense is structured to offset the existing debt:
+      // - The payer (from) pays the full amount and their share is 0 (net: +amount to offset their negative balance)
+      // - The receiver (to) pays nothing but their share is the full amount (net: -amount to offset their positive balance)
+      const fromUserName = getUserName(settlement.from);
+      const toUserName = getUserName(settlement.to);
+      const currency = group.currency || 'USD';
+      const amountFormatted = new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: currency,
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }).format(settlement.amount);
+      
+      const settlementExpense: Expense = {
+        id: `settlement-expense-${Date.now()}-${index}`,
+        groupId: group.id,
+        description: `Settled: ${fromUserName} paid ${toUserName} ${amountFormatted}`,
+        amount: settlement.amount,
+        paidBy: settlement.from, // The person who paid
+        splitAmong: [settlement.from, settlement.to], // Both parties involved
+        splitType: 'unequal',
+        splits: [
+          { userId: settlement.from, amount: 0 }, // Paid the amount, but their share is 0 (net: +amount offsets their debt)
+          { userId: settlement.to, amount: settlement.amount }, // Their share is the full amount (net: -amount offsets what they're owed)
+        ],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      
+      // Save the settlement expense
+      await supabaseStorage.saveExpense(settlementExpense);
+      
+      // Manually refresh data to ensure UI updates immediately
+      await refreshGroupData();
+      
+      // Check if all balances are now settled
+      const updatedExpenses = await supabaseStorage.getExpensesByGroup(groupId);
+      const updatedBalances = calculateGroupBalances(updatedExpenses, group.members);
+      const allSettled = updatedBalances.every(b => Math.abs(b.amount) < 0.01);
+      
+      if (allSettled && updatedBalances.length > 0) {
+        toast.showSuccess('All settled up! 🎉', 5000);
+      } else {
+        toast.showSuccess('Settlement marked as paid and added to expenses! ✅');
+      }
+    } catch (error) {
+      console.error('Error marking settlement as paid:', error);
+      toast.showError('Failed to mark settlement as paid. Please try again.');
+    }
   };
 
   const handleExitGroup = async () => {
@@ -201,10 +526,11 @@ export default function GroupPage() {
       };
       
       await supabaseStorage.saveGroup(updatedGroup);
+      toast.showInfo(`You have exited "${group.name}". 👋`);
       router.push('/dashboard');
     } catch (error) {
       console.error('Error exiting group:', error);
-      alert('Failed to exit group. Please try again.');
+      toast.showError('Failed to exit group. Please try again.');
     }
   };
 
@@ -220,10 +546,11 @@ export default function GroupPage() {
 
     try {
       await supabaseStorage.deleteExpense(expenseId);
-      // Expenses will update automatically via subscription
+      // Manually refresh data to ensure UI updates immediately
+      await refreshGroupData();
     } catch (error) {
       console.error('Error deleting expense:', error);
-      alert('Failed to delete expense. Please try again.');
+      toast.showError('Failed to delete expense. Please try again.');
     }
   };
 
@@ -252,13 +579,18 @@ export default function GroupPage() {
               SplitMate
             </Link>
             <div className="flex items-center gap-4">
-            <span className="text-gray-800 font-semibold">{group.name}</span>
-            <button
-              onClick={() => setShowGroupSettings(true)}
-              className="text-sm text-gray-800 hover:text-money-green-700 px-3 py-1 rounded-lg hover:bg-green-50 transition-colors font-medium"
-            >
-              Settings
-            </button>
+              <div className="flex items-center gap-2 px-4 py-2 bg-money-green-50 border border-money-green-200 rounded-lg">
+                <svg className="w-5 h-5 text-money-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                </svg>
+                <span className="text-money-green-800 font-bold text-lg">{group.name}</span>
+              </div>
+              <button
+                onClick={() => setShowGroupSettings(true)}
+                className="text-sm text-gray-800 hover:text-money-green-700 px-3 py-1 rounded-lg hover:bg-green-50 transition-colors font-medium"
+              >
+                Settings
+              </button>
             </div>
           </div>
         </div>
@@ -266,7 +598,19 @@ export default function GroupPage() {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="mb-6 flex justify-between items-center">
-          <h2 className="text-3xl font-bold text-gray-800">{group.name}</h2>
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 bg-money-green-600 rounded-xl flex items-center justify-center shadow-md">
+              <svg className="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+              </svg>
+            </div>
+            <div>
+              <h2 className="text-3xl font-bold text-gray-900">{group.name}</h2>
+              {group.description && (
+                <p className="text-sm text-gray-500 mt-1">{group.description}</p>
+              )}
+            </div>
+          </div>
           <div className="flex gap-2">
             <button
               onClick={() => setShowExpenseForm(true)}
@@ -294,31 +638,21 @@ export default function GroupPage() {
               setShowExpenseForm(false);
               setExpenseToEdit(null);
             }}
+            onSave={refreshGroupData}
           />
         )}
 
-        {showAddMemberForm && group && (
-          <div className="mb-6">
-            <AddMemberForm
-              group={group}
-              allUsers={users}
-              onClose={() => {
-                setShowAddMemberForm(false);
-              }}
-            />
-          </div>
-        )}
-
-        {showInviteForm && group && (
-          <div className="mb-6">
-            <InviteMemberForm
-              group={group}
-              onClose={() => {
-                setShowInviteForm(false);
-              }}
-            />
-          </div>
-        )}
+               {showInviteForm && group && currentUser && (
+                 <div className="mb-6">
+                   <ShareLinkForm
+                     group={group}
+                     currentUser={currentUser}
+                     onClose={() => {
+                       setShowInviteForm(false);
+                     }}
+                   />
+                 </div>
+               )}
 
         {showGroupSettings && group && (
           <div className="mb-6">
@@ -343,50 +677,75 @@ export default function GroupPage() {
               {expenses.length === 0 ? (
                 <p className="text-gray-500 text-center py-8">No expenses yet. Add one to get started!</p>
               ) : (
-                <div className="space-y-4">
-                  {expenses.map(expense => (
-                    <div key={expense.id} className="border-b pb-4 last:border-0">
-                      <div className="flex justify-between items-start">
-                        <div className="flex-1">
-                          <div className="font-medium text-gray-800">{expense.description}</div>
-                          <div className="text-sm text-gray-500 mt-1">
-                            Paid by {getUserName(expense.paidBy)} • Split among {expense.splitAmong.length} people
+                <div className="space-y-3">
+                  {expenses.map(expense => {
+                    const isSettlement = expense.description.startsWith('Settled:');
+                    return (
+                      <div 
+                        key={expense.id} 
+                        className={`${
+                          isSettlement 
+                            ? 'bg-gradient-to-r from-money-green-50 to-emerald-50 border-2 border-money-green-200 rounded-lg p-4 shadow-sm' 
+                            : 'bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow'
+                        }`}
+                      >
+                        <div className="flex justify-between items-start">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              {isSettlement && (
+                                <div className="flex-shrink-0 w-6 h-6 bg-money-green-600 rounded-full flex items-center justify-center">
+                                  <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                                  </svg>
+                                </div>
+                              )}
+                              <div className={`font-semibold text-base ${isSettlement ? 'text-money-green-800' : 'text-gray-900'}`}>
+                                {expense.description}
+                              </div>
+                            </div>
+                            {!isSettlement && (
+                              <div className="text-sm text-gray-600 mt-1">
+                                Paid by <span className="font-medium">{getUserName(expense.paidBy)}</span> • Split among {expense.splitAmong.length} {expense.splitAmong.length === 1 ? 'person' : 'people'}
+                              </div>
+                            )}
+                            <div className={`text-xs mt-2 ${isSettlement ? 'text-money-green-600' : 'text-gray-400'}`}>
+                              {formatDate(expense.createdAt)}
+                              {expense.updatedAt && expense.updatedAt !== expense.createdAt && (
+                                <span className="ml-2">• Updated {formatDate(expense.updatedAt)}</span>
+                              )}
+                            </div>
                           </div>
-                          <div className="text-xs text-gray-400 mt-1">
-                            {formatDate(expense.createdAt)}
-                            {expense.updatedAt && expense.updatedAt !== expense.createdAt && (
-                              <span className="ml-2">• Updated {formatDate(expense.updatedAt)}</span>
+                          <div className="flex items-center gap-3 ml-4">
+                            <div className={`text-lg font-bold ${isSettlement ? 'text-money-green-700' : 'text-gray-900'}`}>
+                              {formatCurrency(expense.amount)}
+                            </div>
+                            {!isSettlement && (
+                              <div className="flex gap-1">
+                                <button
+                                  onClick={() => handleEditExpense(expense)}
+                                  className="p-2 text-money-green-600 hover:bg-money-green-50 rounded-lg transition-colors"
+                                  title="Edit expense"
+                                >
+                                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                  </svg>
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteExpense(expense.id)}
+                                  className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                  title="Delete expense"
+                                >
+                                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                  </svg>
+                                </button>
+                              </div>
                             )}
                           </div>
                         </div>
-                        <div className="flex items-center gap-3">
-                          <div className="text-lg font-semibold text-gray-800">
-                            {formatCurrency(expense.amount)}
-                          </div>
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => handleEditExpense(expense)}
-                              className="p-2 text-money-green-600 hover:bg-green-50 rounded-lg transition-colors"
-                              title="Edit expense"
-                            >
-                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                              </svg>
-                            </button>
-                            <button
-                              onClick={() => handleDeleteExpense(expense.id)}
-                              className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                              title="Delete expense"
-                            >
-                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                              </svg>
-                            </button>
-                          </div>
-                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -401,28 +760,16 @@ export default function GroupPage() {
                   </svg>
                   Members
                 </h3>
-                <div className="flex gap-2">
-                  <button
-                    onClick={(e) => {
-                      e.preventDefault();
-                      setShowAddMemberForm(true);
-                    }}
-                    className="text-sm bg-money-green-600 text-white px-3 py-1 rounded-lg font-semibold hover:bg-money-green-700 transition-colors shadow-sm"
-                    type="button"
-                  >
-                    Add
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.preventDefault();
-                      setShowInviteForm(true);
-                    }}
-                    className="text-sm bg-money-green-500 text-white px-3 py-1 rounded-lg font-semibold hover:bg-money-green-600 transition-colors shadow-sm"
-                    type="button"
-                  >
-                    Invite
-                  </button>
-                </div>
+                <button
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setShowInviteForm(true);
+                  }}
+                  className="text-sm bg-money-green-600 text-white px-3 py-1 rounded-lg font-semibold hover:bg-money-green-700 transition-colors shadow-sm"
+                  type="button"
+                >
+                  Invite
+                </button>
               </div>
               <div className="space-y-2">
                 {group.members.length === 0 ? (
@@ -459,23 +806,33 @@ export default function GroupPage() {
                 </svg>
                 Balances
               </h3>
-              {balances.length === 0 ? (
-                <p className="text-gray-500 text-sm">No balances to show</p>
+              {!group || group.members.length === 0 ? (
+                <p className="text-gray-500 text-sm">No members in this group</p>
               ) : (
                 <div className="space-y-3">
-                  {balances.map(balance => {
-                    if (Math.abs(balance.amount) < 0.01) return null;
+                  {group.members.map(memberId => {
+                    // Find balance for this member
+                    const balance = balances.find(b => b.userId === memberId);
+                    const amount = balance?.amount || 0;
+                    const isSettled = Math.abs(amount) < 0.01;
+                    
                     return (
-                      <div key={balance.userId} className="flex justify-between items-center">
-                        <span className="text-gray-700">{getUserName(balance.userId)}</span>
+                      <div key={memberId} className="flex justify-between items-center py-1">
+                        <span className="text-gray-700">{getUserName(memberId)}</span>
                         <span
                           className={`font-medium ${
-                            balance.amount > 0 ? 'text-green-600' : 'text-red-600'
+                            isSettled
+                              ? 'text-gray-500'
+                              : balance && balance.amount > 0
+                              ? 'text-green-600'
+                              : 'text-red-600'
                           }`}
                         >
-                          {balance.amount > 0
-                            ? `gets back ${formatCurrency(balance.amount)}`
-                            : `owes ${formatCurrency(Math.abs(balance.amount))}`}
+                          {isSettled
+                            ? 'settled up'
+                            : amount > 0
+                            ? `gets back ${formatCurrency(amount)}`
+                            : `owes ${formatCurrency(Math.abs(amount))}`}
                         </span>
                       </div>
                     );
@@ -490,13 +847,69 @@ export default function GroupPage() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
                 Settlements
+                <span className="text-xs text-gray-500 ml-2">({settlements.length})</span>
               </h3>
-              {settlements.length === 0 ? (
-                <p className="text-gray-500 text-sm">All settled up! 🎉</p>
-              ) : (
-                <div className="space-y-3">
-                  {settlements.map((settlement, index) => (
-                    <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+              {(() => {
+                // Debug: Log current state
+                const hasNonZeroBalances = balances.some(b => Math.abs(b.amount) > 0.01);
+                const calculatedSettlements = calculateSettlements(balances);
+                console.log('🎯 UI Render - Settlements state:', {
+                  settlementsLength: settlements.length,
+                  balancesLength: balances.length,
+                  hasNonZeroBalances,
+                  calculatedSettlementsCount: calculatedSettlements.length,
+                  balances: balances.map(b => ({ userId: b.userId, amount: b.amount })),
+                  settlements: settlements
+                });
+                
+                if (settlements.length === 0) {
+                  return (
+                    <div>
+                      <p className="text-gray-500 text-sm">All settled up! 🎉</p>
+                      {/* Debug info in development */}
+                      {process.env.NODE_ENV === 'development' && (
+                        <div className="text-xs text-gray-400 mt-2 space-y-1">
+                          <p>Debug: Balances = {balances.length}, Expenses = {expenses.length}</p>
+                          <p>Has non-zero balances: {hasNonZeroBalances ? 'Yes' : 'No'}</p>
+                          <p>Calculated settlements: {calculatedSettlements.length}</p>
+                          {balances.length > 0 && (
+                            <details className="mt-2">
+                              <summary className="cursor-pointer">View balances</summary>
+                              <pre className="mt-1 text-xs bg-gray-100 p-2 rounded overflow-auto">
+                                {JSON.stringify(balances.map(b => ({ userId: b.userId, amount: b.amount })), null, 2)}
+                              </pre>
+                            </details>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+                
+                return (
+                  <div className="space-y-3">
+                  {[...settlements]
+                    .sort((a, b) => {
+                      // Sort: unsettled settlements first, then marked/paid settlements
+                      // If one is marked and other isn't, unmarked goes to top
+                      if (!a.markedAsPaid && b.markedAsPaid) return -1;
+                      if (a.markedAsPaid && !b.markedAsPaid) return 1;
+                      
+                      // Both are same type, sort by date (newest first)
+                      const aDate = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+                      const bDate = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+                      return bDate - aDate;
+                    })
+                    .map((settlement, index) => {
+                      // Find original index for handleMarkSettlement
+                      const originalIndex = settlements.findIndex(
+                        s => s.id === settlement.id || 
+                        (s.from === settlement.from && 
+                         s.to === settlement.to && 
+                         Math.abs(s.amount - settlement.amount) < 0.01)
+                      );
+                      return (
+                    <div key={settlement.id || `${settlement.from}-${settlement.to}-${settlement.amount}-${index}`} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                       <div className="flex-1 text-sm">
                         <div>
                           <span className="text-gray-800 font-medium">{getUserName(settlement.from)}</span>
@@ -518,7 +931,7 @@ export default function GroupPage() {
                         )}
                       </div>
                       <button
-                        onClick={() => handleMarkSettlement(settlement, index)}
+                        onClick={() => handleMarkSettlement(settlement, originalIndex >= 0 ? originalIndex : index)}
                         className={`ml-4 px-3 py-1 rounded text-sm font-semibold transition-colors shadow-sm ${
                           settlement.markedAsPaid
                             ? 'bg-money-green-100 text-money-green-800 hover:bg-money-green-200 border border-money-green-300'
@@ -528,9 +941,11 @@ export default function GroupPage() {
                         {settlement.markedAsPaid ? '✓ Paid' : 'Mark Paid'}
                       </button>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
-              )}
+                );
+              })()}
             </div>
           </div>
         </div>
@@ -546,6 +961,7 @@ function ExpenseForm({
   currency,
   expenseToEdit,
   onClose,
+  onSave,
 }: {
   groupId: string;
   groupMembers: string[];
@@ -553,7 +969,9 @@ function ExpenseForm({
   currency: string;
   expenseToEdit?: Expense | null;
   onClose: () => void;
+  onSave?: () => Promise<void>;
 }) {
+  const toast = useToast();
   const [description, setDescription] = useState(expenseToEdit?.description || '');
   const [amount, setAmount] = useState(expenseToEdit?.amount.toString() || '');
   const [paidBy, setPaidBy] = useState(expenseToEdit?.paidBy || groupMembers[0] || '');
@@ -651,7 +1069,7 @@ function ExpenseForm({
     if (splitType === 'unequal') {
       const total = unequalSplits.reduce((sum, split) => sum + (parseFloat(split.amount) || 0), 0);
       if (Math.abs(total - expenseAmount) > 0.01) {
-        alert('Unequal split amounts must equal the total expense amount');
+        toast.showWarning('Unequal split amounts must equal the total expense amount');
         return;
       }
       splits = unequalSplits.map(split => ({
@@ -661,7 +1079,7 @@ function ExpenseForm({
     } else if (splitType === 'percentage') {
       const total = unequalSplits.reduce((sum, split) => sum + (parseFloat(split.amount) || 0), 0);
       if (Math.abs(total - 100) > 0.01) {
-        alert('Percentages must add up to 100%');
+        toast.showWarning('Percentages must add up to 100%');
         return;
       }
       splits = unequalSplits.map(split => ({
@@ -672,8 +1090,11 @@ function ExpenseForm({
 
     try {
       setSaving(true);
+      // Generate a unique ID for new expenses
+      const expenseId = expenseToEdit?.id || `expense-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      
       const expense: Expense = {
-        id: expenseToEdit?.id || Date.now().toString(),
+        id: expenseId,
         groupId,
         description: description.trim(),
         amount: expenseAmount,
@@ -686,10 +1107,19 @@ function ExpenseForm({
       };
 
       await supabaseStorage.saveExpense(expense);
+      console.log('Expense saved, subscription should trigger balance update');
+      
+      // Manually refresh data to ensure UI updates immediately
+      if (onSave) {
+        await onSave();
+      }
+      
+      // Show success notification
+      toast.showSuccess(expenseToEdit ? 'Expense updated successfully! ✏️' : 'Expense added successfully! 💰');
       onClose();
     } catch (error) {
       console.error('Error saving expense:', error);
-      alert('Failed to save expense. Please try again.');
+      toast.showError('Failed to save expense. Please try again.');
     } finally {
       setSaving(false);
     }
@@ -825,181 +1255,84 @@ function ExpenseForm({
   );
 }
 
-function AddMemberForm({
+function ShareLinkForm({
   group,
-  allUsers,
+  currentUser,
   onClose,
 }: {
   group: Group;
-  allUsers: User[];
+  currentUser: User;
   onClose: () => void;
 }) {
-  const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
-  const [saving, setSaving] = useState(false);
+  const toast = useToast();
+  const [inviteLink, setInviteLink] = useState<string>('');
+  const [generating, setGenerating] = useState(false);
+  const [copied, setCopied] = useState(false);
 
-  // Get users who are not already in the group
-  const availableUsers = allUsers.filter(user => !group.members.includes(user.id));
-  
-  // Reset selected users when available users change
   useEffect(() => {
-    setSelectedUsers([]);
-  }, [availableUsers.length]);
+    generateInviteLink();
+  }, []);
 
-  const handleToggleUser = (userId: string) => {
-    if (selectedUsers.includes(userId)) {
-      setSelectedUsers(selectedUsers.filter(id => id !== userId));
-    } else {
-      setSelectedUsers([...selectedUsers, userId]);
+  const generateInviteLink = async () => {
+    try {
+      setGenerating(true);
+      
+      // Check if user is the creator or a member
+      if (!group.members.includes(currentUser.id)) {
+        toast.showError('Only group members can generate invitation links');
+        return;
+      }
+
+      // Generate a unique token
+      const token = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${Math.random().toString(36).substr(2, 9)}`;
+      
+      // Save invitation to database (no email required)
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + 30); // 30 days expiry
+
+      const invitationId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+      const { error } = await supabase
+        .from('group_invites')
+        .insert({
+          id: invitationId,
+          group_id: group.id,
+          email: '[email protected]', // Placeholder - not used for magic links
+          invited_by: currentUser.id,
+          token: token,
+          status: 'pending',
+          expires_at: expiresAt.toISOString(),
+          created_at: new Date().toISOString(),
+        });
+
+      if (error) {
+        console.error('Error creating invitation:', error);
+        toast.showError('Failed to generate invitation link');
+        return;
+      }
+
+      // Generate the invitation link
+      const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+      const link = `${baseUrl}/invite/${token}`;
+      setInviteLink(link);
+      toast.showSuccess('Invitation link generated! 🔗');
+    } catch (error: any) {
+      console.error('Error generating invite link:', error);
+      toast.showError('Failed to generate invitation link. Please try again.');
+    } finally {
+      setGenerating(false);
     }
   };
 
-  const handleAddMembers = async () => {
-    if (selectedUsers.length === 0) {
-      alert('Please select at least one user to add');
-      return;
-    }
-
-    // Prevent adding duplicate members
-    const newMembers = selectedUsers.filter(userId => !group.members.includes(userId));
-    
-    if (newMembers.length === 0) {
-      alert('Selected users are already members of this group');
-      return;
-    }
-
+  const handleCopy = async () => {
     try {
-      setSaving(true);
-      const updatedGroup: Group = {
-        ...group,
-        members: [...group.members, ...newMembers],
-      };
-
-      await supabaseStorage.saveGroup(updatedGroup);
-      alert(`Successfully added ${newMembers.length} member(s) to the group!`);
-      onClose();
+      await navigator.clipboard.writeText(inviteLink);
+      setCopied(true);
+      toast.showSuccess('Invitation link copied to clipboard! 📋');
+      setTimeout(() => setCopied(false), 2000);
     } catch (error) {
-      console.error('Error adding members:', error);
-      alert('Failed to add members. Please try again.');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (availableUsers.length === 0) {
-    return (
-      <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
-        <h3 className="text-xl font-semibold text-gray-800 mb-4">Add Members</h3>
-        {allUsers.length === 0 ? (
-          <div>
-            <p className="text-gray-600 mb-4">No other users found in the system.</p>
-            <p className="text-sm text-gray-500 mb-4">
-              Other users need to sign in with Google to appear here.
-            </p>
-          </div>
-        ) : (
-          <p className="text-gray-600 mb-4">All users are already members of this group.</p>
-        )}
-        <button
-          onClick={onClose}
-          className="w-full bg-gray-200 text-gray-800 py-2 rounded-lg font-medium hover:bg-gray-300 transition-colors"
-        >
-          Close
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="bg-white rounded-lg shadow-lg border-2 border-money-green-200 p-6 mb-6">
-      <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
-        <svg className="w-6 h-6 text-money-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-        </svg>
-        Add Members to Group
-      </h3>
-      <div className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            Select users to add
-          </label>
-          <div className="space-y-2 max-h-64 overflow-y-auto border border-gray-200 rounded-lg p-4">
-            {availableUsers.map(user => (
-              <label
-                key={user.id}
-                className="flex items-center space-x-3 cursor-pointer hover:bg-gray-50 p-2 rounded"
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedUsers.includes(user.id)}
-                  onChange={() => handleToggleUser(user.id)}
-                  className="w-4 h-4 text-money-green-600 focus:ring-money-green-500 border-gray-300 rounded"
-                />
-                <div className="flex items-center gap-3">
-                  {user.avatar && (
-                    <img
-                      src={user.avatar}
-                      alt={user.name}
-                      className="w-8 h-8 rounded-full"
-                    />
-                  )}
-                  <div>
-                    <div className="font-medium text-gray-800">{user.name}</div>
-                    <div className="text-sm text-gray-600">{user.email}</div>
-                  </div>
-                </div>
-              </label>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex gap-4 pt-4">
-          <button
-            onClick={handleAddMembers}
-            disabled={selectedUsers.length === 0 || saving}
-            className="flex-1 bg-money-green-600 text-white py-2 rounded-lg font-semibold hover:bg-money-green-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed shadow-md"
-          >
-            {saving ? 'Adding...' : `Add ${selectedUsers.length > 0 ? `${selectedUsers.length} ` : ''}Member${selectedUsers.length !== 1 ? 's' : ''}`}
-          </button>
-          <button
-            onClick={onClose}
-            className="flex-1 bg-gray-200 text-gray-800 py-2 rounded-lg font-medium hover:bg-gray-300 transition-colors"
-          >
-            Cancel
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function InviteMemberForm({
-  group,
-  onClose,
-}: {
-  group: Group;
-  onClose: () => void;
-}) {
-  const [email, setEmail] = useState('');
-  const [saving, setSaving] = useState(false);
-
-  const handleInvite = async () => {
-    if (!email.trim() || !email.includes('@')) {
-      alert('Please enter a valid email address');
-      return;
-    }
-
-    try {
-      setSaving(true);
-      // In a real app, you'd send an email invitation
-      // For now, we'll just show a success message
-      alert(`Invitation email sent to ${email}! (Note: Email functionality requires backend setup)`);
-      setEmail('');
-      onClose();
-    } catch (error) {
-      console.error('Error sending invitation:', error);
-      alert('Failed to send invitation. Please try again.');
-    } finally {
-      setSaving(false);
+      console.error('Failed to copy:', error);
+      toast.showError('Failed to copy link. Please copy it manually.');
     }
   };
 
@@ -1007,38 +1340,53 @@ function InviteMemberForm({
     <div className="bg-white rounded-lg shadow-lg border-2 border-money-green-200 p-6 mb-6">
       <h3 className="text-xl font-semibold text-gray-900 mb-4 flex items-center gap-2">
         <svg className="w-6 h-6 text-money-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
         </svg>
-        Invite Member by Email
+        Share Invitation Link
       </h3>
       <div className="space-y-4">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Email Address *</label>
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-money-green-500 text-gray-800"
-            placeholder="friend@example.com"
-          />
-          <p className="text-xs text-gray-500 mt-1">
-            They'll receive an email invitation to join this group
+          <label className="block text-sm font-medium text-gray-700 mb-2">Invitation Link</label>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={inviteLink}
+              readOnly
+              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-800 text-sm"
+              placeholder={generating ? 'Generating link...' : 'Click "Generate Link" to create an invitation'}
+            />
+            <button
+              onClick={handleCopy}
+              disabled={!inviteLink || copied}
+              className="px-4 py-2 bg-money-green-600 text-white rounded-lg font-semibold hover:bg-money-green-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed shadow-md"
+            >
+              {copied ? '✓ Copied' : 'Copy'}
+            </button>
+          </div>
+          <p className="text-xs text-gray-500 mt-2">
+            Share this link with anyone you want to invite. They can use it to join the group.
+          </p>
+        </div>
+
+        <div className="bg-blue-50 border-l-4 border-blue-400 p-4 rounded">
+          <p className="text-sm text-blue-800">
+            <strong>How it works:</strong> Anyone with this link can join your group. The link expires in 30 days. Share it via any method you prefer (messaging, email, etc.).
           </p>
         </div>
 
         <div className="flex gap-4 pt-4">
           <button
-            onClick={handleInvite}
-            disabled={saving || !email.trim()}
+            onClick={generateInviteLink}
+            disabled={generating}
             className="flex-1 bg-money-green-600 text-white py-2 rounded-lg font-semibold hover:bg-money-green-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed shadow-md"
           >
-            {saving ? 'Sending...' : 'Send Invitation'}
+            {generating ? 'Generating...' : 'Generate New Link'}
           </button>
           <button
             onClick={onClose}
-            className="flex-1 bg-gray-200 text-gray-800 py-2 rounded-lg font-medium hover:bg-gray-300 transition-colors"
+            className="flex-1 bg-gray-200 text-gray-800 py-2 rounded-lg font-medium hover:bg-gray-300 shadow-sm"
           >
-            Cancel
+            Close
           </button>
         </div>
       </div>
@@ -1053,6 +1401,7 @@ function GroupSettingsForm({
   group: Group;
   onClose: () => void;
 }) {
+  const toast = useToast();
   const [currency, setCurrency] = useState(group.currency || 'USD');
   const [saving, setSaving] = useState(false);
   
@@ -1080,11 +1429,11 @@ function GroupSettingsForm({
       };
 
       await supabaseStorage.saveGroup(updatedGroup);
-      alert('Group settings saved!');
+      toast.showSuccess('Group settings saved! ✅');
       onClose();
     } catch (error) {
       console.error('Error saving group settings:', error);
-      alert('Failed to save settings. Please try again.');
+      toast.showError('Failed to save settings. Please try again.');
     } finally {
       setSaving(false);
     }

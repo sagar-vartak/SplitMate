@@ -35,6 +35,7 @@ export interface Balance {
 }
 
 export interface Settlement {
+  id?: string; // Settlement ID (generated if not provided)
   from: string; // User ID
   to: string; // User ID
   amount: number;

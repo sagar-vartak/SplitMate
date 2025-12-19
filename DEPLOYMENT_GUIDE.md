@@ -1,4 +1,4 @@
-# Deployment Guide - Host Your Splitwise Clone
+# Deployment Guide - Host Your SplitMate
 
 ## 🚀 Best Hosting Options
 

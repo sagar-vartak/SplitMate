@@ -1,22 +1,61 @@
 import { supabase } from './supabase';
-import { User, Group, Expense } from '@/types';
+import { User, Group, Expense, Settlement, GroupInvite } from '@/types';
+
+// Simple UUID generator (fallback if uuid package not available)
+function generateUUID(): string {
+  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${Math.random().toString(36).substr(2, 9)}`;
+}
 
 export const supabaseStorage = {
   // Users
-  getUsers: async (): Promise<User[]> => {
+  getUsers: async (userId?: string): Promise<User[]> => {
     try {
-      const { data, error } = await supabase
-        .from('users')
-        .select('*')
-        .order('name');
+      // If userId is provided, only return users who are in at least one group with this user
+      if (userId) {
+        // Get all groups the user is a member of
+        const userGroups = await supabaseStorage.getGroups(userId);
+        const allMemberIds = new Set<string>();
+        
+        // Collect all member IDs from user's groups
+        userGroups.forEach(group => {
+          group.members.forEach(memberId => {
+            allMemberIds.add(memberId);
+          });
+        });
 
-      if (error) throw error;
-      return (data || []).map(user => ({
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        avatar: user.avatar || undefined,
-      })) as User[];
+        // Get users who are in the same groups
+        if (allMemberIds.size === 0) {
+          return [];
+        }
+
+        const { data, error } = await supabase
+          .from('users')
+          .select('*')
+          .in('id', Array.from(allMemberIds))
+          .order('name');
+
+        if (error) throw error;
+        return (data || []).map(user => ({
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          avatar: user.avatar || undefined,
+        })) as User[];
+      } else {
+        // If no userId, return all users (for backward compatibility)
+        const { data, error } = await supabase
+          .from('users')
+          .select('*')
+          .order('name');
+
+        if (error) throw error;
+        return (data || []).map(user => ({
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          avatar: user.avatar || undefined,
+        })) as User[];
+      }
     } catch (error) {
       console.error('Error getting users:', error);
       return [];
@@ -286,13 +325,68 @@ export const supabaseStorage = {
     }
   },
 
+  // Settlements
+  saveSettlement: async (settlement: Settlement): Promise<void> => {
+    try {
+      const { error } = await supabase
+        .from('settlements')
+        .upsert({
+          id: settlement.id || `settlement-${Date.now()}`,
+          group_id: settlement.groupId,
+          from_user_id: settlement.from,
+          to_user_id: settlement.to,
+          amount: settlement.amount,
+          marked_as_paid: settlement.markedAsPaid || false,
+          marked_by: settlement.markedBy || null,
+          marked_at: settlement.markedAt || null,
+          created_at: settlement.createdAt || new Date().toISOString(),
+        }, {
+          onConflict: 'id',
+        });
+
+      if (error) throw error;
+    } catch (error) {
+      console.error('Error saving settlement:', error);
+      throw error;
+    }
+  },
+
+  getSettlementsByGroup: async (groupId: string): Promise<Settlement[]> => {
+    try {
+      const { data, error } = await supabase
+        .from('settlements')
+        .select('*')
+        .eq('group_id', groupId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      return (data || []).map(s => ({
+        id: s.id,
+        groupId: s.group_id,
+        from: s.from_user_id,
+        to: s.to_user_id,
+        amount: parseFloat(s.amount),
+        markedAsPaid: s.marked_as_paid,
+        markedBy: s.marked_by || undefined,
+        markedAt: s.marked_at || undefined,
+        createdAt: s.created_at,
+      })) as Settlement[];
+    } catch (error) {
+      console.error('Error getting settlements by group:', error);
+      return [];
+    }
+  },
+
   // Real-time subscriptions
   subscribeToGroups: (
     userId: string,
     callback: (groups: Group[]) => void
   ): (() => void) => {
+    const channelName = `groups-changes-${userId}`;
+    console.log('Setting up groups subscription:', channelName);
+    
     const channel = supabase
-      .channel('groups-changes')
+      .channel(channelName)
       .on(
         'postgres_changes',
         {
@@ -300,14 +394,32 @@ export const supabaseStorage = {
           schema: 'public',
           table: 'groups',
         },
-        async () => {
-          const groups = await supabaseStorage.getGroups(userId);
-          callback(groups);
+        async (payload) => {
+          console.log('Groups subscription triggered:', payload.eventType, payload.new || payload.old);
+          try {
+            const groups = await supabaseStorage.getGroups(userId);
+            callback(groups);
+          } catch (error) {
+            console.error('Error in groups subscription callback:', error);
+          }
         }
       )
-      .subscribe();
+      .subscribe((status, err) => {
+        console.log('Groups subscription status:', status);
+        if (status === 'SUBSCRIBED') {
+          console.log('✅ Successfully subscribed to groups changes');
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          // Don't log as error - this is expected if Realtime isn't enabled
+          // The app will still work with manual refreshes
+          console.info('ℹ️ Groups subscription not active (Realtime may not be enabled). App will use manual refreshes.');
+          if (err) {
+            console.info('Subscription details:', err);
+          }
+        }
+      });
 
     return () => {
+      console.log('Unsubscribing from groups:', channelName);
       supabase.removeChannel(channel);
     };
   },
@@ -316,8 +428,11 @@ export const supabaseStorage = {
     groupId: string,
     callback: (expenses: Expense[]) => void
   ): (() => void) => {
+    const channelName = `expenses-changes-${groupId}`;
+    console.log('Setting up expenses subscription:', channelName);
+    
     const channel = supabase
-      .channel('expenses-changes')
+      .channel(channelName)
       .on(
         'postgres_changes',
         {
@@ -326,16 +441,266 @@ export const supabaseStorage = {
           table: 'expenses',
           filter: `group_id=eq.${groupId}`,
         },
-        async () => {
-          const expenses = await supabaseStorage.getExpensesByGroup(groupId);
-          callback(expenses);
+        async (payload) => {
+          console.log('Expenses subscription triggered:', payload.eventType, payload.new || payload.old);
+          try {
+            const expenses = await supabaseStorage.getExpensesByGroup(groupId);
+            callback(expenses);
+          } catch (error) {
+            console.error('Error in expenses subscription callback:', error);
+          }
         }
       )
-      .subscribe();
+      .subscribe((status, err) => {
+        console.log('Expenses subscription status:', status);
+        if (status === 'SUBSCRIBED') {
+          console.log('✅ Successfully subscribed to expenses changes');
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          // Don't log as error - this is expected if Realtime isn't enabled
+          // The app will still work with manual refreshes
+          console.info('ℹ️ Expenses subscription not active (Realtime may not be enabled). App will use manual refreshes.');
+          if (err) {
+            console.info('Subscription details:', err);
+          }
+        }
+      });
 
     return () => {
+      console.log('Unsubscribing from expenses:', channelName);
       supabase.removeChannel(channel);
     };
+  },
+
+  subscribeToSettlements: (
+    groupId: string,
+    callback: (settlements: Settlement[]) => void
+  ): (() => void) => {
+    const channelName = `settlements-changes-${groupId}`;
+    console.log('Setting up settlements subscription:', channelName);
+    
+    const channel = supabase
+      .channel(channelName)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'settlements',
+          filter: `group_id=eq.${groupId}`,
+        },
+        async (payload) => {
+          console.log('Settlements subscription triggered:', payload.eventType, payload.new || payload.old);
+          try {
+            const settlements = await supabaseStorage.getSettlementsByGroup(groupId);
+            callback(settlements);
+          } catch (error) {
+            console.error('Error in settlements subscription callback:', error);
+          }
+        }
+      )
+      .subscribe((status, err) => {
+        console.log('Settlements subscription status:', status);
+        if (status === 'SUBSCRIBED') {
+          console.log('✅ Successfully subscribed to settlements changes');
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          // Don't log as error - this is expected if Realtime isn't enabled
+          // The app will still work with manual refreshes
+          console.info('ℹ️ Settlements subscription not active (Realtime may not be enabled). App will use manual refreshes.');
+          if (err) {
+            console.info('Subscription details:', err);
+          }
+        }
+      });
+
+    return () => {
+      console.log('Unsubscribing from settlements:', channelName);
+      supabase.removeChannel(channel);
+    };
+  },
+
+  // Group Invitations
+  createInvitation: async (
+    groupId: string,
+    email: string,
+    invitedBy: string
+  ): Promise<GroupInvite> => {
+    try {
+      const token = generateUUID();
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + 7); // 7 days from now
+
+      const invitation: GroupInvite = {
+        id: generateUUID(),
+        groupId,
+        email: email.toLowerCase().trim(),
+        invitedBy,
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+        expiresAt: expiresAt.toISOString(),
+      };
+
+      const { error } = await supabase
+        .from('group_invites')
+        .insert({
+          id: invitation.id,
+          group_id: groupId,
+          email: invitation.email,
+          invited_by: invitedBy,
+          token: token,
+          status: invitation.status,
+          expires_at: invitation.expiresAt,
+          created_at: invitation.createdAt,
+        });
+
+      if (error) throw error;
+
+      return { ...invitation, token } as GroupInvite & { token: string };
+    } catch (error) {
+      console.error('Error creating invitation:', error);
+      throw error;
+    }
+  },
+
+  getInvitationByToken: async (token: string): Promise<(GroupInvite & { token: string }) | null> => {
+    try {
+      const { data, error } = await supabase
+        .from('group_invites')
+        .select('*')
+        .eq('token', token)
+        .single();
+
+      if (error) {
+        if (error.code === 'PGRST116' || error.code === 'PGRST205') {
+          return null;
+        }
+        throw error;
+      }
+
+      if (!data) return null;
+
+      // Check if expired
+      const expiresAt = new Date(data.expires_at);
+      if (expiresAt < new Date() && data.status === 'pending') {
+        // Mark as expired
+        await supabase
+          .from('group_invites')
+          .update({ status: 'expired' })
+          .eq('id', data.id);
+        return null;
+      }
+
+      return {
+        id: data.id,
+        groupId: data.group_id,
+        email: data.email,
+        invitedBy: data.invited_by,
+        status: data.status,
+        createdAt: data.created_at,
+        expiresAt: data.expires_at,
+        token: data.token,
+      } as GroupInvite & { token: string };
+    } catch (error) {
+      console.error('Error getting invitation by token:', error);
+      return null;
+    }
+  },
+
+  acceptInvitation: async (token: string, acceptedBy: string): Promise<Group | null> => {
+    try {
+      // Get invitation by token
+      const { data: invitationData, error: inviteError } = await supabase
+        .from('group_invites')
+        .select('*')
+        .eq('token', token)
+        .single();
+
+      if (inviteError || !invitationData) {
+        throw new Error('Invalid or expired invitation');
+      }
+
+      // Check if expired
+      const expiresAt = new Date(invitationData.expires_at);
+      if (expiresAt < new Date() && invitationData.status === 'pending') {
+        await supabase
+          .from('group_invites')
+          .update({ status: 'expired' })
+          .eq('id', invitationData.id);
+        throw new Error('This invitation has expired');
+      }
+
+      if (invitationData.status !== 'pending') {
+        throw new Error('This invitation has already been used');
+      }
+
+      // Get group
+      const group = await supabaseStorage.getGroup(invitationData.group_id);
+      if (!group) {
+        throw new Error('Group not found');
+      }
+
+      // Check if user is already a member
+      if (group.members.includes(acceptedBy)) {
+        // User is already a member, just mark invitation as accepted
+        await supabase
+          .from('group_invites')
+          .update({
+            status: 'accepted',
+            accepted_at: new Date().toISOString(),
+            accepted_by: acceptedBy,
+          })
+          .eq('id', invitationData.id);
+        return group;
+      }
+
+      // Add user to group
+      const updatedMembers = [...group.members, acceptedBy];
+      const updatedGroup: Group = {
+        ...group,
+        members: updatedMembers,
+      };
+
+      await supabaseStorage.saveGroup(updatedGroup);
+
+      // Mark invitation as accepted
+      await supabase
+        .from('group_invites')
+        .update({
+          status: 'accepted',
+          accepted_at: new Date().toISOString(),
+          accepted_by: acceptedBy,
+        })
+        .eq('id', invitationData.id);
+
+      return updatedGroup;
+    } catch (error) {
+      console.error('Error accepting invitation:', error);
+      throw error;
+    }
+  },
+
+  getInvitationsByGroup: async (groupId: string): Promise<GroupInvite[]> => {
+    try {
+      const { data, error } = await supabase
+        .from('group_invites')
+        .select('*')
+        .eq('group_id', groupId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      return (data || []).map(inv => ({
+        id: inv.id,
+        groupId: inv.group_id,
+        email: inv.email,
+        invitedBy: inv.invited_by,
+        status: inv.status,
+        createdAt: inv.created_at,
+        expiresAt: inv.expires_at,
+      })) as GroupInvite[];
+    } catch (error) {
+      console.error('Error getting invitations by group:', error);
+      return [];
+    }
   },
 };
 

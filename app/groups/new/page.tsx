@@ -6,14 +6,15 @@ import Link from 'next/link';
 import { supabaseAuth } from '@/lib/supabase-auth';
 import { supabaseStorage } from '@/lib/supabase-storage';
 import { User, Group } from '@/types';
+import { useToast } from '@/components/ToastContainer';
 
 export default function NewGroup() {
   const router = useRouter();
+  const toast = useToast();
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [users, setUsers] = useState<User[]>([]);
   const [groupName, setGroupName] = useState('');
   const [description, setDescription] = useState('');
-  const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
+  const [currency, setCurrency] = useState('USD');
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
 
@@ -26,9 +27,6 @@ export default function NewGroup() {
 
       try {
         setCurrentUser(user);
-        setSelectedMembers([user.id]);
-        const allUsers = await supabaseStorage.getUsers();
-        setUsers(allUsers);
       } catch (error) {
         console.error('Error loading data:', error);
       } finally {
@@ -39,16 +37,8 @@ export default function NewGroup() {
     return () => unsubscribe();
   }, [router]);
 
-  const handleToggleMember = (userId: string) => {
-    if (selectedMembers.includes(userId)) {
-      setSelectedMembers(selectedMembers.filter(id => id !== userId));
-    } else {
-      setSelectedMembers([...selectedMembers, userId]);
-    }
-  };
-
   const handleCreateGroup = async () => {
-    if (!groupName.trim() || selectedMembers.length === 0 || !currentUser) return;
+    if (!groupName.trim() || !currentUser) return;
 
     try {
       setCreating(true);
@@ -56,15 +46,19 @@ export default function NewGroup() {
         id: Date.now().toString(),
         name: groupName.trim(),
         description: description.trim() || undefined,
-        members: selectedMembers,
+        members: [currentUser.id], // Only creator is a member initially
         createdAt: new Date().toISOString(),
+        currency: currency,
+        createdBy: currentUser.id,
       };
 
       await supabaseStorage.saveGroup(newGroup, currentUser.id);
+      toast.showSuccess(`Group "${groupName.trim()}" created successfully! 🎉`);
+      toast.showInfo('You can invite members via email from the group page.');
       router.push(`/groups/${newGroup.id}`);
     } catch (error) {
       console.error('Error creating group:', error);
-      alert('Failed to create group. Please try again.');
+      toast.showError('Failed to create group. Please try again.');
     } finally {
       setCreating(false);
     }
@@ -136,48 +130,42 @@ export default function NewGroup() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-3">
-                Add Members *
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Default Currency *
               </label>
-              <div className="space-y-2 max-h-64 overflow-y-auto border border-gray-200 rounded-lg p-4">
-                {users.map(user => (
-                  <label
-                    key={user.id}
-                    className="flex items-center space-x-3 cursor-pointer hover:bg-gray-50 p-2 rounded"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedMembers.includes(user.id)}
-                      onChange={() => handleToggleMember(user.id)}
-                      className="w-4 h-4 text-money-green-600 focus:ring-money-green-500 border-gray-300 rounded"
-                    />
-                    <div className="flex items-center gap-3">
-                      {user.avatar && (
-                        <img
-                          src={user.avatar}
-                          alt={user.name}
-                          className="w-8 h-8 rounded-full"
-                        />
-                      )}
-                      <div>
-                        <div className="font-medium text-gray-800">{user.name}</div>
-                        <div className="text-sm text-gray-500">{user.email}</div>
-                      </div>
-                    </div>
-                  </label>
-                ))}
+              <select
+                value={currency}
+                onChange={(e) => setCurrency(e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-money-green-500 text-gray-800 bg-white"
+              >
+                <option value="USD">$ US Dollar (USD)</option>
+                <option value="EUR">€ Euro (EUR)</option>
+                <option value="GBP">£ British Pound (GBP)</option>
+                <option value="INR">₹ Indian Rupee (INR)</option>
+                <option value="JPY">¥ Japanese Yen (JPY)</option>
+                <option value="CAD">C$ Canadian Dollar (CAD)</option>
+                <option value="AUD">A$ Australian Dollar (AUD)</option>
+              </select>
+            </div>
+
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <div className="flex items-start gap-3">
+                <svg className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <div>
+                  <p className="text-sm font-medium text-blue-900 mb-1">Invite Members After Creation</p>
+                  <p className="text-xs text-blue-700">
+                    You'll be the only member initially. After creating the group, you can invite others via email from the group page.
+                  </p>
+                </div>
               </div>
-              {users.length === 0 && (
-                <p className="text-sm text-gray-500 mt-2">
-                  No other users found. You'll be the only member.
-                </p>
-              )}
             </div>
 
             <div className="flex gap-4 pt-4">
               <button
                 onClick={handleCreateGroup}
-                disabled={!groupName.trim() || selectedMembers.length === 0 || creating}
+                disabled={!groupName.trim() || creating}
                 className="flex-1 bg-money-green-600 text-white py-2 rounded-lg font-semibold hover:bg-money-green-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed shadow-md"
               >
                 {creating ? 'Creating...' : 'Create Group'}

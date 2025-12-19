@@ -19,7 +19,7 @@ Supabase is an open-source Firebase alternative with a **generous free tier** th
 
 1. Click **"New Project"**
 2. Fill in the details:
-   - **Name**: `splitwise-clone` (or any name)
+   - **Name**: `splitmate` (or any name)
    - **Database Password**: Create a strong password (save it somewhere safe)
    - **Region**: Choose the closest to you
 3. Click **"Create new project"**
