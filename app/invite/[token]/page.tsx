@@ -62,9 +62,44 @@ export default function InviteAcceptancePage() {
         const { data: groupDataArray, error: groupError } = await supabase
           .rpc('get_group_for_invitation', { invitation_token: token });
 
-        if (groupError || !groupDataArray || groupDataArray.length === 0) {
-          console.error('Error fetching group:', groupError);
-          console.error('Group ID:', invitationData.group_id);
+        if (groupError) {
+          console.error('Error fetching group via function:', groupError);
+          console.error('Token:', token);
+          console.error('Group ID from invitation:', invitationData.group_id);
+          
+          // Fallback: Try to get group directly using the group_id from invitation
+          // This might work if the user is already a member
+          const { data: fallbackGroup, error: fallbackError } = await supabase
+            .from('groups')
+            .select('*')
+            .eq('id', invitationData.group_id)
+            .single();
+          
+          if (fallbackError || !fallbackGroup) {
+            console.error('Fallback also failed:', fallbackError);
+            toast.showError('Group not found. Please check that the invitation link is valid.');
+            setTimeout(() => router.push('/dashboard'), 2000);
+            return;
+          }
+          
+          // Use fallback data
+          const group: Group = {
+            id: fallbackGroup.id,
+            name: fallbackGroup.name,
+            description: fallbackGroup.description || undefined,
+            members: fallbackGroup.members || [],
+            createdAt: fallbackGroup.created_at,
+            currency: fallbackGroup.currency || 'USD',
+            createdBy: fallbackGroup.created_by || undefined,
+          };
+          setGroup(group);
+          return;
+        }
+
+        if (!groupDataArray || groupDataArray.length === 0) {
+          console.error('Function returned empty result');
+          console.error('Token:', token);
+          console.error('Group ID from invitation:', invitationData.group_id);
           toast.showError('Group not found. Please check that the invitation link is valid.');
           setTimeout(() => router.push('/dashboard'), 2000);
           return;

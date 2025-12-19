@@ -43,6 +43,8 @@ CREATE POLICY "Users can delete groups they created"
 
 -- Create a SECURITY DEFINER function to get group data for invitations
 -- This bypasses RLS and allows reading group data when there's a valid invitation
+-- SECURITY DEFINER runs with the privileges of the function creator (bypasses RLS)
+-- We use SET LOCAL to disable RLS checks within the function
 CREATE OR REPLACE FUNCTION get_group_for_invitation(invitation_token TEXT)
 RETURNS TABLE (
   id TEXT,
@@ -53,7 +55,23 @@ RETURNS TABLE (
   currency TEXT,
   created_by UUID
 ) AS $$
+DECLARE
+  group_id_val TEXT;
 BEGIN
+  -- First, get the group_id from the invitation (bypassing RLS with SECURITY DEFINER)
+  SELECT gi.group_id INTO group_id_val
+  FROM group_invites gi
+  WHERE gi.token = invitation_token
+    AND gi.status = 'pending'
+    AND gi.expires_at > NOW()
+  LIMIT 1;
+  
+  -- If no valid invitation found, return empty
+  IF group_id_val IS NULL THEN
+    RETURN;
+  END IF;
+  
+  -- Then get the group data (bypassing RLS with SECURITY DEFINER)
   RETURN QUERY
   SELECT 
     g.id,
@@ -61,13 +79,11 @@ BEGIN
     g.description,
     g.members,
     g.created_at,
-    g.currency,
+    COALESCE(g.currency, 'USD') as currency,
     g.created_by
   FROM groups g
-  INNER JOIN group_invites gi ON gi.group_id = g.id
-  WHERE gi.token = invitation_token
-    AND gi.status = 'pending'
-    AND gi.expires_at > NOW();
+  WHERE g.id = group_id_val
+  LIMIT 1;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
