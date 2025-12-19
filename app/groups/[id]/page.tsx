@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
 import { supabaseAuth } from '@/lib/supabase-auth';
@@ -1268,9 +1268,14 @@ function ShareLinkForm({
   const [inviteLink, setInviteLink] = useState<string>('');
   const [generating, setGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
+  const hasGeneratedRef = useRef(false);
 
+  // Generate link automatically when form opens
   useEffect(() => {
-    generateInviteLink();
+    if (!hasGeneratedRef.current) {
+      hasGeneratedRef.current = true;
+      generateInviteLink();
+    }
   }, []);
 
   const generateInviteLink = async () => {
@@ -1353,7 +1358,7 @@ function ShareLinkForm({
               value={inviteLink}
               readOnly
               className="flex-1 px-4 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-800 text-sm"
-              placeholder={generating ? 'Generating link...' : 'Click "Generate Link" to create an invitation'}
+              placeholder={generating ? 'Generating link...' : inviteLink ? inviteLink : 'Click "Generate Link" to create an invitation'}
             />
             <button
               onClick={handleCopy}
