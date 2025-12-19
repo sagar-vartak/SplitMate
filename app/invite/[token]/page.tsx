@@ -26,22 +26,10 @@ export default function InviteAcceptancePage() {
       try {
         setLoading(true);
         
-        // Get invitation by token directly (this works without auth due to RLS policy)
-        // Use a join to get group data through the invitation
+        // Step 1: Get invitation by token (this works without auth due to RLS policy)
         const { data: invitationData, error: inviteError } = await supabase
           .from('group_invites')
-          .select(`
-            *,
-            groups!inner (
-              id,
-              name,
-              description,
-              members,
-              created_at,
-              currency,
-              created_by
-            )
-          `)
+          .select('*')
           .eq('token', token)
           .single();
 
@@ -66,19 +54,24 @@ export default function InviteAcceptancePage() {
           return;
         }
 
-        // Extract group data from the join (groups is returned as an object with !inner)
-        const groupData = invitationData.groups as any;
-        
-        if (!groupData) {
-          console.error('Group data not found in invitation join');
+        // Set invitation
+        setInvitation(invitationData);
+
+        // Step 2: Get group data using the SECURITY DEFINER function
+        // This bypasses RLS and allows reading group data for valid invitations
+        const { data: groupDataArray, error: groupError } = await supabase
+          .rpc('get_group_for_invitation', { invitation_token: token });
+
+        if (groupError || !groupDataArray || groupDataArray.length === 0) {
+          console.error('Error fetching group:', groupError);
+          console.error('Group ID:', invitationData.group_id);
           toast.showError('Group not found. Please check that the invitation link is valid.');
           setTimeout(() => router.push('/dashboard'), 2000);
           return;
         }
 
-        // Set invitation (without groups to avoid circular reference)
-        const { groups, ...inviteData } = invitationData;
-        setInvitation(inviteData);
+        // The function returns a table, so we get the first row
+        const groupData = groupDataArray[0];
 
         // Transform to Group type
         const group: Group = {
