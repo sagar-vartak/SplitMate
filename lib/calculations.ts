@@ -61,27 +61,36 @@ export function calculateGroupBalances(expenses: Expense[], groupMembers: string
   const groupBalances: Balance[] = [];
 
   groupMembers.forEach(userId => {
-    const amount = balances.get(userId) || 0;
+    const netBalance = balances.get(userId) || 0;
+    // netBalance > 0 means they paid more than their share (should get money back)
+    // netBalance < 0 means they paid less than their share (owes money)
+    // For display: positive = gets back, negative = owes
     groupBalances.push({
       userId,
       groupId: expenses[0]?.groupId || '',
-      amount: -amount, // Negative means owes, positive means is owed
+      amount: netBalance, // Positive = gets back, Negative = owes
     });
   });
 
   return groupBalances;
 }
 
+/**
+ * Calculate simplified settlements using Splitwise's algorithm
+ * This minimizes the number of transactions needed to settle all debts
+ */
 export function calculateSettlements(balances: Balance[]): Settlement[] {
-  const settlements: Settlement[] = [];
-  const balanceMap = new Map<string, number>();
+  if (balances.length === 0) return [];
 
-  // Create a map of balances
+  const balanceMap = new Map<string, number>();
+  
+  // Create a map of net balances
+  // Positive = should receive money, Negative = should pay money
   balances.forEach(balance => {
     balanceMap.set(balance.userId, balance.amount);
   });
 
-  // Simplify debts using a greedy algorithm
+  // Separate into creditors (positive balance) and debtors (negative balance)
   const creditors: { userId: string; amount: number }[] = [];
   const debtors: { userId: string; amount: number }[] = [];
 
@@ -93,10 +102,20 @@ export function calculateSettlements(balances: Balance[]): Settlement[] {
     }
   });
 
-  // Sort by amount (largest first)
+  // If no creditors or debtors, everyone is settled
+  if (creditors.length === 0 || debtors.length === 0) {
+    return [];
+  }
+
+  // Sort by amount (largest first) for optimal matching
   creditors.sort((a, b) => b.amount - a.amount);
   debtors.sort((a, b) => b.amount - a.amount);
 
+  const settlements: Settlement[] = [];
+  const groupId = balances[0]?.groupId || '';
+
+  // Use a greedy algorithm to minimize transactions
+  // This is similar to Splitwise's "simplify payments" feature
   let creditorIndex = 0;
   let debtorIndex = 0;
 
@@ -104,6 +123,7 @@ export function calculateSettlements(balances: Balance[]): Settlement[] {
     const creditor = creditors[creditorIndex];
     const debtor = debtors[debtorIndex];
 
+    // Calculate how much this debtor should pay to this creditor
     const settlementAmount = Math.min(creditor.amount, debtor.amount);
 
     if (settlementAmount > 0.01) {
@@ -111,12 +131,15 @@ export function calculateSettlements(balances: Balance[]): Settlement[] {
         from: debtor.userId,
         to: creditor.userId,
         amount: Math.round(settlementAmount * 100) / 100,
-        groupId: balances[0]?.groupId || '',
+        groupId,
+        createdAt: new Date().toISOString(),
       });
 
+      // Update remaining amounts
       creditor.amount -= settlementAmount;
       debtor.amount -= settlementAmount;
 
+      // Move to next creditor/debtor if fully settled
       if (creditor.amount < 0.01) {
         creditorIndex++;
       }

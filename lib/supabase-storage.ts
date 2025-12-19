@@ -113,6 +113,8 @@ export const supabaseStorage = {
         description: group.description || undefined,
         members: group.members || [],
         createdAt: group.created_at,
+        currency: group.currency || 'USD',
+        createdBy: group.created_by || undefined,
       })) as Group[];
     } catch (error) {
       console.error('Error getting groups:', error);
@@ -137,6 +139,8 @@ export const supabaseStorage = {
         description: data.description || undefined,
         members: data.members || [],
         createdAt: data.created_at,
+        currency: data.currency || 'USD',
+        createdBy: data.created_by || undefined,
       } as Group;
     } catch (error) {
       console.error('Error getting group:', error);
@@ -156,6 +160,7 @@ export const supabaseStorage = {
           name: group.name,
           description: group.description || null,
           members: group.members,
+          currency: group.currency || 'USD',
           created_by: userId || null,
           updated_at: new Date().toISOString(),
         }, {

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { supabase } from '@/lib/supabase';
 import { supabaseAuth } from '@/lib/supabase-auth';
 import { User } from '@/types';
 
@@ -14,6 +15,7 @@ export default function Home() {
   useEffect(() => {
     let mounted = true;
     let timeoutId: NodeJS.Timeout;
+    let authUnsubscribe: (() => void) | null = null;
 
     // Set a timeout to prevent infinite loading
     timeoutId = setTimeout(() => {
@@ -21,26 +23,31 @@ export default function Home() {
         console.warn('Auth check timeout - setting loading to false');
         setLoading(false);
       }
-    }, 5000); // 5 second timeout
+    }, 10000); // 10 second timeout (increased to allow for network delays)
 
-    // Check if user is already signed in
+    // Check session immediately (Supabase should have it in localStorage)
     const checkSession = async () => {
       try {
-        const user = await Promise.race([
-          supabaseAuth.getCurrentUser(),
-          new Promise<User | null>((resolve) => 
-            setTimeout(() => resolve(null), 3000)
-          )
-        ]) as User | null;
-
-        if (!mounted) return;
-
-        if (user) {
-          clearTimeout(timeoutId);
-          setCurrentUser(user);
-          setLoading(false);
-          router.push('/dashboard');
-          return;
+        // Check session directly from Supabase first (fastest)
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        if (session?.user) {
+          console.log('Session found directly:', session.user.email);
+          // Get full user data
+          const user = await supabaseAuth.getCurrentUser();
+          
+          if (!mounted) return;
+          
+          if (user) {
+            console.log('User found, redirecting to dashboard:', user.email);
+            clearTimeout(timeoutId);
+            setCurrentUser(user);
+            setLoading(false);
+            router.push('/dashboard');
+            return;
+          }
+        } else {
+          console.log('No session found in localStorage');
         }
       } catch (error) {
         console.error('Error checking session:', error);
@@ -52,12 +59,11 @@ export default function Home() {
       }
     };
 
-    checkSession();
-
-    // Also listen for auth state changes
-    const unsubscribe = supabaseAuth.onAuthStateChanged((user) => {
+    // Set up auth state listener (for real-time changes)
+    authUnsubscribe = supabaseAuth.onAuthStateChanged((user) => {
       if (!mounted) return;
       
+      console.log('Auth state changed callback:', user ? user.email : 'no user');
       clearTimeout(timeoutId);
       setCurrentUser(user);
       setLoading(false);
@@ -67,10 +73,15 @@ export default function Home() {
       }
     });
 
+    // Do immediate check
+    checkSession();
+
     return () => {
       mounted = false;
       clearTimeout(timeoutId);
-      unsubscribe();
+      if (authUnsubscribe) {
+        authUnsubscribe();
+      }
     };
   }, [router]);
 
@@ -92,12 +103,12 @@ export default function Home() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading...</p>
-        </div>
+    <div className="min-h-screen bg-gradient-to-br from-green-50 to-emerald-100 flex items-center justify-center">
+      <div className="text-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-money-green-600 mx-auto mb-4"></div>
+        <p className="text-gray-700">Loading...</p>
       </div>
+    </div>
     );
   }
 
@@ -107,21 +118,28 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-xl p-8 max-w-md w-full">
-        <h1 className="text-3xl font-bold text-gray-800 mb-2 text-center">
-          Welcome to Splitwise Clone
-        </h1>
-        <p className="text-gray-600 text-center mb-8">
-          Split expenses with friends easily
-        </p>
+    <div className="min-h-screen bg-gradient-to-br from-green-50 via-emerald-50 to-green-100 flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl shadow-2xl p-8 max-w-md w-full border border-green-100">
+        <div className="text-center mb-6">
+          <div className="inline-flex items-center justify-center w-16 h-16 bg-money-green-600 rounded-full mb-4">
+            <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">
+            SplitMate
+          </h1>
+          <p className="text-gray-600">
+            Split expenses with friends easily
+          </p>
+        </div>
         
         <div className="space-y-4">
-          <button
-            onClick={handleSignInWithGoogle}
-            disabled={signingIn}
-            className="w-full flex items-center justify-center gap-3 bg-white border-2 border-gray-300 text-gray-700 py-3 px-4 rounded-lg font-medium hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
+                 <button
+                   onClick={handleSignInWithGoogle}
+                   disabled={signingIn}
+                   className="w-full flex items-center justify-center gap-3 bg-white border-2 border-gray-300 text-gray-800 py-3 px-4 rounded-lg font-semibold hover:bg-green-50 hover:border-money-green-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+                 >
             {signingIn ? (
               <>
                 <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-gray-600"></div>

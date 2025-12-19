@@ -72,31 +72,41 @@ export default function NewGroup() {
 
   if (loading || !currentUser) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
+      <div className="min-h-screen bg-gradient-to-br from-green-50 to-emerald-100 flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading...</p>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-money-green-600 mx-auto mb-4"></div>
+          <p className="text-gray-700">Loading...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
-      <nav className="bg-white shadow-sm border-b">
+    <div className="min-h-screen bg-gradient-to-br from-green-50 via-emerald-50 to-green-100">
+      <nav className="bg-white shadow-md border-b-2 border-money-green-600">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
-            <Link href="/dashboard" className="text-2xl font-bold text-gray-800">
-              Splitwise Clone
+            <Link href="/dashboard" className="flex items-center gap-2 text-2xl font-bold text-gray-900">
+              <div className="w-8 h-8 bg-money-green-600 rounded-lg flex items-center justify-center">
+                <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              SplitMate
             </Link>
-            <span className="text-gray-600">Create New Group</span>
+            <span className="text-gray-800 font-semibold">Create New Group</span>
           </div>
         </div>
       </nav>
 
       <main className="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-2xl font-bold text-gray-800 mb-6">Create New Group</h2>
+        <div className="bg-white rounded-lg shadow-md border border-green-100 p-6">
+          <h2 className="text-2xl font-bold text-gray-900 mb-6 flex items-center gap-2">
+            <svg className="w-6 h-6 text-money-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            Create New Group
+          </h2>
 
           <div className="space-y-6">
             <div>
@@ -107,7 +117,7 @@ export default function NewGroup() {
                 type="text"
                 value={groupName}
                 onChange={(e) => setGroupName(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-money-green-500 focus:border-transparent text-gray-800"
                 placeholder="e.g., Roommates, Trip to Paris"
               />
             </div>
@@ -119,7 +129,7 @@ export default function NewGroup() {
               <textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-money-green-500 focus:border-transparent text-gray-800"
                 rows={3}
                 placeholder="Add a description for this group"
               />
@@ -139,7 +149,7 @@ export default function NewGroup() {
                       type="checkbox"
                       checked={selectedMembers.includes(user.id)}
                       onChange={() => handleToggleMember(user.id)}
-                      className="w-4 h-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
+                      className="w-4 h-4 text-money-green-600 focus:ring-money-green-500 border-gray-300 rounded"
                     />
                     <div className="flex items-center gap-3">
                       {user.avatar && (
@@ -168,7 +178,7 @@ export default function NewGroup() {
               <button
                 onClick={handleCreateGroup}
                 disabled={!groupName.trim() || selectedMembers.length === 0 || creating}
-                className="flex-1 bg-indigo-600 text-white py-2 rounded-lg font-medium hover:bg-indigo-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+                className="flex-1 bg-money-green-600 text-white py-2 rounded-lg font-semibold hover:bg-money-green-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed shadow-md"
               >
                 {creating ? 'Creating...' : 'Create Group'}
               </button>

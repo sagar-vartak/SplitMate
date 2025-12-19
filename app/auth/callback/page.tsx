@@ -37,7 +37,10 @@ function AuthCallbackContent() {
         }
 
         if (code) {
+          console.log('OAuth code received, exchanging for session...');
+          
           // Exchange code for session
+          // This should automatically persist the session when persistSession: true
           const { data, error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
           
           if (exchangeError) {
@@ -50,8 +53,47 @@ function AuthCallbackContent() {
           }
 
           if (data.session && data.user) {
-            // Wait a bit to ensure session is persisted
-            await new Promise(resolve => setTimeout(resolve, 500));
+            console.log('Session received from OAuth:', data.user.email);
+            
+            // Verify session is actually saved to localStorage
+            // Wait a bit and check multiple times to ensure persistence
+            let sessionPersisted = false;
+            for (let i = 0; i < 5; i++) {
+              await new Promise(resolve => setTimeout(resolve, 200));
+              const { data: { session: verifySession } } = await supabase.auth.getSession();
+              if (verifySession && verifySession.user.id === data.user.id) {
+                console.log('Session verified in localStorage (attempt', i + 1, ')');
+                sessionPersisted = true;
+                break;
+              }
+            }
+            
+            if (!sessionPersisted) {
+              console.error('Session was not persisted to localStorage!');
+              // Try to manually set the session
+              const { error: setSessionError } = await supabase.auth.setSession({
+                access_token: data.session.access_token,
+                refresh_token: data.session.refresh_token,
+              });
+              if (setSessionError) {
+                console.error('Failed to manually set session:', setSessionError);
+              } else {
+                console.log('Session manually set successfully');
+              }
+            }
+            
+            // Verify one more time
+            const { data: { session: finalSession } } = await supabase.auth.getSession();
+            if (!finalSession) {
+              console.error('Session still not found after all attempts!');
+              setError('Failed to save session. Please try signing in again.');
+              setTimeout(() => {
+                router.push('/');
+              }, 3000);
+              return;
+            }
+            
+            console.log('Session confirmed in localStorage, proceeding...');
             
             // Create or get user profile
             let userData = await supabaseAuth.getCurrentUser();
@@ -76,12 +118,15 @@ function AuthCallbackContent() {
             }
             
             if (userData) {
+              console.log('User data ready, redirecting to dashboard...');
               // Use window.location for a full page reload to ensure auth state is refreshed
               window.location.href = '/dashboard';
             } else {
+              console.error('No user data available');
               router.push('/');
             }
           } else {
+            console.error('No session or user in OAuth response');
             router.push('/');
           }
         } else {
@@ -122,7 +167,7 @@ function AuthCallbackContent() {
 
   if (error) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-gradient-to-br from-green-50 to-emerald-100 flex items-center justify-center p-4">
         <div className="bg-white rounded-lg shadow-xl p-8 max-w-md w-full text-center">
           <div className="text-red-600 mb-4">
             <svg className="w-16 h-16 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -138,10 +183,10 @@ function AuthCallbackContent() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
+    <div className="min-h-screen bg-gradient-to-br from-green-50 to-emerald-100 flex items-center justify-center">
       <div className="text-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
-        <p className="text-gray-600">Completing sign in...</p>
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-money-green-600 mx-auto mb-4"></div>
+        <p className="text-gray-700">Completing sign in...</p>
       </div>
     </div>
   );
@@ -150,10 +195,10 @@ function AuthCallbackContent() {
 export default function AuthCallback() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
+      <div className="min-h-screen bg-gradient-to-br from-green-50 to-emerald-100 flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading...</p>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-money-green-600 mx-auto mb-4"></div>
+          <p className="text-gray-700">Loading...</p>
         </div>
       </div>
     }>
