@@ -95,5 +95,96 @@ class GroupRepository {
             Result.failure(e)
         }
     }
+
+    suspend fun updateGroup(group: Group): Result<Unit> {
+        return try {
+            supabase.postgrest.from("groups")
+                .update(
+                    mapOf(
+                        "name" to group.name,
+                        "description" to (group.description ?: ""),
+                        "currency" to group.currency,
+                        "members" to group.members
+                    )
+                ) {
+                    filter {
+                        eq("id", group.id)
+                    }
+                }
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getGroupInviteByToken(token: String): Map<String, Any>? {
+        return try {
+            val result = supabase.postgrest.from("group_invites")
+                .select(columns = Columns.ALL) {
+                    filter {
+                        eq("token", token)
+                    }
+                }
+                .decodeSingle<Map<String, Any>>()
+            result
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    suspend fun acceptInvitation(token: String, userId: String): Result<Group> {
+        return try {
+            // Try RPC function first (if available in Supabase)
+            try {
+                supabase.postgrest.rpc(
+                    "accept_invitation_and_join_group",
+                    mapOf(
+                        "invite_token" to token,
+                        "user_id" to userId
+                    )
+                )
+                // If RPC succeeds, get the updated group
+                val invitation = getGroupInviteByToken(token)
+                if (invitation != null) {
+                    val groupId = invitation["group_id"] as String
+                    val group = getGroup(groupId)
+                    if (group != null) {
+                        return Result.success(group)
+                    }
+                }
+            } catch (rpcError: Exception) {
+                // RPC not available, fallback to manual update
+                println("RPC not available, using manual update: ${rpcError.message}")
+            }
+            
+            // Manual update fallback
+            val invitation = getGroupInviteByToken(token)
+            if (invitation == null) {
+                return Result.failure(Exception("Invitation not found"))
+            }
+            
+            val groupId = invitation["group_id"] as? String ?: return Result.failure(Exception("Invalid invitation"))
+            val group = getGroup(groupId)
+            if (group == null) {
+                return Result.failure(Exception("Group not found"))
+            }
+            
+            if (userId in group.members) {
+                // User already a member
+                return Result.success(group)
+            }
+            
+            // Add user to group
+            val updatedGroup = group.copy(members = group.members + userId)
+            val updateResult = updateGroup(updatedGroup)
+            if (updateResult.isSuccess) {
+                Result.success(updatedGroup)
+            } else {
+                Result.failure(Exception("Failed to update group"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 }
 

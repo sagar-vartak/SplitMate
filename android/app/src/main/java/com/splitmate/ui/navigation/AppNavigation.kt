@@ -10,7 +10,10 @@ import androidx.navigation.navArgument
 import com.splitmate.ui.auth.LoginScreen
 import com.splitmate.ui.dashboard.DashboardScreen
 import com.splitmate.ui.groups.GroupDetailScreen
+import com.splitmate.ui.groups.GroupDetailScreenEnhanced
 import com.splitmate.ui.groups.CreateGroupScreen
+import com.splitmate.ui.groups.GroupSettingsScreen
+import com.splitmate.ui.invite.InviteAcceptScreen
 
 sealed class Screen(val route: String) {
     object Login : Screen("login")
@@ -18,7 +21,13 @@ sealed class Screen(val route: String) {
     object GroupDetail : Screen("group/{groupId}") {
         fun createRoute(groupId: String) = "group/$groupId"
     }
+    object GroupSettings : Screen("group/{groupId}/settings") {
+        fun createRoute(groupId: String) = "group/$groupId/settings"
+    }
     object CreateGroup : Screen("create_group")
+    object InviteAccept : Screen("invite/{token}") {
+        fun createRoute(token: String) = "invite/$token"
+    }
 }
 
 @Composable
@@ -64,12 +73,15 @@ fun AppNavigation() {
             }
             
             if (currentUserId.isNotEmpty()) {
-                GroupDetailScreen(
+                GroupDetailScreenEnhanced(
                     groupId = groupId,
                     currentUserId = currentUserId,
                     onNavigateBack = { navController.popBackStack() },
                     onNavigateToExpense = { expenseId ->
                         // Navigate to expense form if needed
+                    },
+                    onNavigateToSettings = { groupId ->
+                        navController.navigate(Screen.GroupSettings.createRoute(groupId))
                     }
                 )
             }
@@ -82,6 +94,33 @@ fun AppNavigation() {
                     navController.popBackStack()
                     navController.navigate(Screen.GroupDetail.createRoute(groupId))
                 }
+            )
+        }
+
+        composable(
+            route = Screen.GroupSettings.route,
+            arguments = listOf(navArgument("groupId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val groupId = backStackEntry.arguments?.getString("groupId") ?: ""
+            GroupSettingsScreen(
+                groupId = groupId,
+                onNavigateBack = { navController.popBackStack() }
+            )
+        }
+
+        composable(
+            route = Screen.InviteAccept.route,
+            arguments = listOf(navArgument("token") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val token = backStackEntry.arguments?.getString("token") ?: ""
+            InviteAcceptScreen(
+                token = token,
+                onAcceptSuccess = { groupId ->
+                    navController.navigate(Screen.GroupDetail.createRoute(groupId)) {
+                        popUpTo(Screen.Dashboard.route) { inclusive = false }
+                    }
+                },
+                onNavigateBack = { navController.popBackStack() }
             )
         }
     }

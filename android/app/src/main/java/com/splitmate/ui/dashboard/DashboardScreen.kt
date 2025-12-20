@@ -15,7 +15,12 @@ import androidx.compose.ui.unit.sp
 import com.splitmate.data.model.Group
 import com.splitmate.data.repository.AuthRepository
 import com.splitmate.data.repository.GroupRepository
+import com.splitmate.ui.notifications.NotificationDropdown
+import com.splitmate.ui.components.rememberToastManager
+import com.splitmate.ui.components.ToastContainer
 import kotlinx.coroutines.launch
+import com.google.accompanist.swiperefresh.SwipeRefresh
+import com.google.accompanist.swiperefresh.rememberSwipeRefreshState
 
 @Composable
 fun DashboardScreen(
@@ -25,17 +30,39 @@ fun DashboardScreen(
     val authRepository = AuthRepository()
     val groupRepository = GroupRepository()
     val scope = rememberCoroutineScope()
+    val toastManager = rememberToastManager()
 
     var currentUser by remember { mutableStateOf<com.splitmate.data.model.User?>(null) }
     var groups by remember { mutableStateOf<List<Group>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
+    var isRefreshing by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    val swipeRefreshState = rememberSwipeRefreshState(isRefreshing)
+
+    fun loadGroups() {
+        scope.launch {
+            try {
+                errorMessage = null
+                currentUser = authRepository.getCurrentUser()
+                if (currentUser != null) {
+                    groups = groupRepository.getGroups(currentUser!!.id)
+                    toastManager.showSuccess("Refreshed")
+                } else {
+                    errorMessage = "Not signed in"
+                }
+            } catch (e: Exception) {
+                errorMessage = e.message ?: "Failed to load groups"
+                toastManager.showError("Error: ${e.message ?: "Unknown error"}")
+            } finally {
+                isLoading = false
+                isRefreshing = false
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
-        currentUser = authRepository.getCurrentUser()
-        if (currentUser != null) {
-            groups = groupRepository.getGroups(currentUser!!.id)
-        }
-        isLoading = false
+        loadGroups()
     }
 
     Scaffold(
@@ -43,10 +70,25 @@ fun DashboardScreen(
             TopAppBar(
                 title = { Text("SplitMate") },
                 actions = {
+                    if (currentUser != null) {
+                        NotificationDropdown(
+                            userId = currentUser!!.id,
+                            onNotificationClick = { notification ->
+                                if (notification.groupId != null) {
+                                    onNavigateToGroup(notification.groupId)
+                                }
+                            }
+                        )
+                    }
                     TextButton(onClick = {
                         scope.launch {
-                            authRepository.signOut()
-                            // Navigate back to login - will be handled by navigation
+                            try {
+                                authRepository.signOut()
+                                toastManager.showInfo("Signed out")
+                                // Navigate back to login - will be handled by navigation
+                            } catch (e: Exception) {
+                                toastManager.showError("Failed to sign out: ${e.message}")
+                            }
                         }
                     }) {
                         Text("Sign Out")
@@ -63,16 +105,42 @@ fun DashboardScreen(
             }
         }
     ) { padding ->
-        if (isLoading) {
+        SwipeRefresh(
+            state = swipeRefreshState,
+            onRefresh = {
+                isRefreshing = true
+                loadGroups()
+            }
+        ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding),
-                contentAlignment = Alignment.Center
+                    .padding(padding)
             ) {
-                CircularProgressIndicator()
-            }
-        } else if (groups.isEmpty()) {
+            if (isLoading && !isRefreshing) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
+            } else if (errorMessage != null && currentUser == null) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = errorMessage ?: "Error",
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(onClick = { loadGroups() }) {
+                            Text("Retry")
+                        }
+                    }
+                }
+            } else if (groups.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -109,6 +177,11 @@ fun DashboardScreen(
                 }
             }
         }
+        
+        ToastContainer(
+            toast = toastManager.currentToast,
+            onDismiss = { toastManager.dismiss() }
+        )
     }
 }
 

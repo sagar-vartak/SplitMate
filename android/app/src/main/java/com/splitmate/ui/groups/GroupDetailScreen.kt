@@ -214,6 +214,7 @@ fun GroupDetailScreen(
     if (showExpenseForm && group != null) {
         ExpenseFormDialog(
             group = group!!,
+            users = users,
             expense = expenseToEdit,
             onDismiss = {
                 showExpenseForm = false
@@ -396,76 +397,6 @@ fun ExpenseCard(
             }
         }
     }
-}
-
-@Composable
-fun ExpenseFormDialog(
-    group: Group,
-    expense: Expense?,
-    onDismiss: () -> Unit,
-    onSave: (Expense) -> Unit
-) {
-    var description by remember { mutableStateOf(expense?.description ?: "") }
-    var amount by remember { mutableStateOf(expense?.amount?.toString() ?: "") }
-    var paidBy by remember { mutableStateOf(expense?.paidBy ?: group.members.firstOrNull() ?: "") }
-    var selectedMembers by remember { mutableStateOf(expense?.splitAmong ?: group.members) }
-    var splitType by remember { mutableStateOf(expense?.splitType ?: "equal") }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (expense == null) "Add Expense" else "Edit Expense") },
-        text = {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                OutlinedTextField(
-                    value = description,
-                    onValueChange = { description = it },
-                    label = { Text("Description") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = amount,
-                    onValueChange = { amount = it },
-                    label = { Text("Amount") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                // Paid by dropdown
-                // Split among checkboxes
-                // Split type selector
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    val expenseAmount = amount.toDoubleOrNull() ?: 0.0
-                    val expenseId = expense?.id ?: "expense-${System.currentTimeMillis()}"
-                    onSave(
-                        Expense(
-                            id = expenseId,
-                            groupId = group.id,
-                            description = description,
-                            amount = expenseAmount,
-                            paidBy = paidBy,
-                            splitAmong = selectedMembers,
-                            splitType = splitType,
-                            splits = null, // Will be calculated
-                            createdAt = expense?.createdAt ?: java.time.Instant.now().toString(),
-                            updatedAt = java.time.Instant.now().toString()
-                        )
-                    )
-                },
-                enabled = description.isNotBlank() && amount.toDoubleOrNull() != null
-            ) {
-                Text("Save")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
-    )
 }
 
 fun formatCurrency(amount: Double, currency: String = "USD"): String {

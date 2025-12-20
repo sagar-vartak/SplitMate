@@ -79,6 +79,7 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.compose.material:material")
     implementation("androidx.navigation:navigation-compose:2.7.5")
 
     // ViewModel
@@ -105,6 +106,9 @@ dependencies {
 
     // Date formatting
     implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.5.0")
+
+    // Swipe Refresh (Accompanist)
+    implementation("com.google.accompanist:accompanist-swiperefresh:0.32.0")
 
     // Testing
     testImplementation("junit:junit:4.13.2")
