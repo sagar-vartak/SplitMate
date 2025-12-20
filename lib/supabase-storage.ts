@@ -856,8 +856,11 @@ export const supabaseStorage = {
     userId: string,
     callback: (notifications: Notification[]) => void
   ): (() => void) => {
+    const channelName = `notifications:${userId}`;
+    console.log('Setting up notifications subscription:', channelName);
+    
     const channel = supabase
-      .channel(`notifications:${userId}`)
+      .channel(channelName)
       .on(
         'postgres_changes',
         {
@@ -866,15 +869,56 @@ export const supabaseStorage = {
           table: 'notifications',
           filter: `user_id=eq.${userId}`,
         },
-        async () => {
-          // Reload notifications when changes occur
-          const notifications = await supabaseStorage.getNotifications(userId);
-          callback(notifications);
+        async (payload) => {
+          console.log('Notifications subscription triggered:', payload.eventType);
+          try {
+            // Reload notifications when changes occur
+            const notifications = await supabaseStorage.getNotifications(userId);
+            callback(notifications);
+          } catch (error) {
+            console.error('Error in notifications subscription callback:', error);
+          }
         }
       )
-      .subscribe();
+      .subscribe((status, err) => {
+        console.log('Notifications subscription status:', status);
+        if (status === 'SUBSCRIBED') {
+          console.log('✅ Successfully subscribed to notifications changes');
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          console.info('ℹ️ Notifications subscription not active (Realtime may not be enabled). Will use polling fallback.');
+          if (err) {
+            console.info('Subscription details:', err);
+          }
+        }
+      });
+
+    // Fallback: Poll for notifications every 5 seconds if subscription fails
+    let pollInterval: NodeJS.Timeout | null = null;
+    const startPolling = () => {
+      if (pollInterval) return; // Already polling
+      pollInterval = setInterval(async () => {
+        try {
+          const notifications = await supabaseStorage.getNotifications(userId);
+          callback(notifications);
+        } catch (error) {
+          console.error('Error polling notifications:', error);
+        }
+      }, 5000); // Poll every 5 seconds
+    };
+
+    // Check subscription status after a delay and start polling if needed
+    setTimeout(() => {
+      if (channel.state !== 'joined') {
+        console.log('Subscription not active, starting polling fallback');
+        startPolling();
+      }
+    }, 2000);
 
     return () => {
+      console.log('Unsubscribing from notifications:', channelName);
+      if (pollInterval) {
+        clearInterval(pollInterval);
+      }
       supabase.removeChannel(channel);
     };
   },

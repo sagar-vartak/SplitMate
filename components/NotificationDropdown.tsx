@@ -49,10 +49,11 @@ export default function NotificationDropdown({ userId }: NotificationDropdownPro
     loadNotifications();
 
     // Subscribe to real-time updates
-    const unsubscribe = supabaseStorage.subscribeToNotifications(userId, (notifs) => {
+    const unsubscribe = supabaseStorage.subscribeToNotifications(userId, async (notifs) => {
+      // Also refresh the count to ensure accuracy
+      const count = await supabaseStorage.getUnreadNotificationCount(userId);
       setNotifications(notifs);
-      const unread = notifs.filter(n => !n.read).length;
-      setUnreadCount(unread);
+      setUnreadCount(count);
     });
 
     return () => unsubscribe();
