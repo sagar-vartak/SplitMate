@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { User, Group, Expense, Settlement, GroupInvite } from '@/types';
+import { User, Group, Expense, Settlement, GroupInvite, Notification } from '@/types';
 
 // Simple UUID generator (fallback if uuid package not available)
 function generateUUID(): string {
@@ -287,6 +287,8 @@ export const supabaseStorage = {
 
   saveExpense: async (expense: Expense): Promise<void> => {
     try {
+      const isUpdate = expense.updatedAt && expense.createdAt !== expense.updatedAt;
+      
       const { error } = await supabase
         .from('expenses')
         .upsert({
@@ -305,6 +307,37 @@ export const supabaseStorage = {
         });
 
       if (error) throw error;
+
+      // Create notifications for expense added (only for new expenses, not updates)
+      if (!isUpdate) {
+        try {
+          // Get group to find all members
+          const group = await supabaseStorage.getGroup(expense.groupId);
+          if (group) {
+            // Get user who paid to get their name
+            const users = await supabaseStorage.getUsers();
+            const paidByUser = users.find(u => u.id === expense.paidBy);
+            const paidByName = paidByUser?.name || 'Someone';
+
+            // Notify all group members except the person who added the expense
+            const membersToNotify = group.members.filter(memberId => memberId !== expense.paidBy);
+            
+            for (const memberId of membersToNotify) {
+              await supabaseStorage.createNotification({
+                userId: memberId,
+                type: 'expense_added',
+                title: 'New Expense Added',
+                message: `${paidByName} added "${expense.description}" (${expense.amount.toFixed(2)})`,
+                groupId: expense.groupId,
+                expenseId: expense.id,
+              });
+            }
+          }
+        } catch (notifError) {
+          console.error('Error creating expense notifications:', notifError);
+          // Don't throw - notifications are non-critical
+        }
+      }
     } catch (error) {
       console.error('Error saving expense:', error);
       throw error;
@@ -607,6 +640,13 @@ export const supabaseStorage = {
 
   acceptInvitation: async (token: string, acceptedBy: string): Promise<Group | null> => {
     try {
+      // First, get the group before adding the user (to know who to notify)
+      const { data: groupBeforeArray } = await supabase
+        .rpc('get_group_by_invite_token', { invite_token: token });
+
+      const groupBefore = groupBeforeArray && groupBeforeArray.length > 0 ? groupBeforeArray[0] : null;
+      const existingMembers = groupBefore?.members || [];
+
       // Use the function to accept invitation and add user to group (bypasses RLS)
       const { data: groupDataArray, error: functionError } = await supabase
         .rpc('accept_invitation_and_join_group', {
@@ -624,7 +664,7 @@ export const supabaseStorage = {
       }
 
       const groupData = groupDataArray[0];
-      return {
+      const updatedGroup: Group = {
         id: groupData.id,
         name: groupData.name,
         description: groupData.description || undefined,
@@ -632,7 +672,30 @@ export const supabaseStorage = {
         createdAt: groupData.created_at,
         currency: groupData.currency || 'USD',
         createdBy: groupData.created_by || undefined,
-      } as Group;
+      };
+
+      // Create notifications for member added
+      try {
+        const users = await supabaseStorage.getUsers();
+        const newMember = users.find(u => u.id === acceptedBy);
+        const newMemberName = newMember?.name || 'Someone';
+
+        // Notify all existing group members (before the new member was added)
+        for (const memberId of existingMembers) {
+          await supabaseStorage.createNotification({
+            userId: memberId,
+            type: 'member_added',
+            title: 'New Member Joined',
+            message: `${newMemberName} joined "${updatedGroup.name}"`,
+            groupId: updatedGroup.id,
+          });
+        }
+      } catch (notifError) {
+        console.error('Error creating member added notifications:', notifError);
+        // Don't throw - notifications are non-critical
+      }
+
+      return updatedGroup;
     } catch (error) {
       console.error('Error accepting invitation:', error);
       throw error;
@@ -662,6 +725,158 @@ export const supabaseStorage = {
       console.error('Error getting invitations by group:', error);
       return [];
     }
+  },
+
+  // Notifications
+  createNotification: async (notification: {
+    userId: string;
+    type: 'expense_added' | 'member_added' | 'settlement_marked' | 'group_invite' | 'member_left';
+    title: string;
+    message: string;
+    groupId?: string;
+    expenseId?: string;
+    settlementId?: string;
+  }): Promise<void> => {
+    try {
+      const notificationId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      
+      const { error } = await supabase
+        .from('notifications')
+        .insert({
+          id: notificationId,
+          user_id: notification.userId,
+          type: notification.type,
+          title: notification.title,
+          message: notification.message,
+          group_id: notification.groupId || null,
+          expense_id: notification.expenseId || null,
+          settlement_id: notification.settlementId || null,
+          read: false,
+          created_at: new Date().toISOString(),
+        });
+
+      if (error) throw error;
+    } catch (error) {
+      console.error('Error creating notification:', error);
+      // Don't throw - notifications are non-critical
+    }
+  },
+
+  getNotifications: async (userId: string): Promise<Notification[]> => {
+    try {
+      const { data, error } = await supabase
+        .from('notifications')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+      if (error) throw error;
+
+      return (data || []).map(notif => ({
+        id: notif.id,
+        userId: notif.user_id,
+        type: notif.type,
+        title: notif.title,
+        message: notif.message,
+        groupId: notif.group_id || undefined,
+        expenseId: notif.expense_id || undefined,
+        settlementId: notif.settlement_id || undefined,
+        read: notif.read,
+        createdAt: notif.created_at,
+      })) as Notification[];
+    } catch (error) {
+      console.error('Error getting notifications:', error);
+      return [];
+    }
+  },
+
+  getUnreadNotificationCount: async (userId: string): Promise<number> => {
+    try {
+      const { count, error } = await supabase
+        .from('notifications')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', userId)
+        .eq('read', false);
+
+      if (error) throw error;
+      return count || 0;
+    } catch (error) {
+      console.error('Error getting unread count:', error);
+      return 0;
+    }
+  },
+
+  markNotificationAsRead: async (notificationId: string, userId: string): Promise<void> => {
+    try {
+      const { error } = await supabase
+        .from('notifications')
+        .update({ read: true })
+        .eq('id', notificationId)
+        .eq('user_id', userId);
+
+      if (error) throw error;
+    } catch (error) {
+      console.error('Error marking notification as read:', error);
+      throw error;
+    }
+  },
+
+  markAllNotificationsAsRead: async (userId: string): Promise<void> => {
+    try {
+      const { error } = await supabase
+        .from('notifications')
+        .update({ read: true })
+        .eq('user_id', userId)
+        .eq('read', false);
+
+      if (error) throw error;
+    } catch (error) {
+      console.error('Error marking all notifications as read:', error);
+      throw error;
+    }
+  },
+
+  deleteNotification: async (notificationId: string, userId: string): Promise<void> => {
+    try {
+      const { error } = await supabase
+        .from('notifications')
+        .delete()
+        .eq('id', notificationId)
+        .eq('user_id', userId);
+
+      if (error) throw error;
+    } catch (error) {
+      console.error('Error deleting notification:', error);
+      throw error;
+    }
+  },
+
+  subscribeToNotifications: (
+    userId: string,
+    callback: (notifications: Notification[]) => void
+  ): (() => void) => {
+    const channel = supabase
+      .channel(`notifications:${userId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'notifications',
+          filter: `user_id=eq.${userId}`,
+        },
+        async () => {
+          // Reload notifications when changes occur
+          const notifications = await supabaseStorage.getNotifications(userId);
+          callback(notifications);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   },
 };
 

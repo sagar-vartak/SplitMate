@@ -492,6 +492,47 @@ export default function GroupPage() {
       // Save the settlement expense
       await supabaseStorage.saveExpense(settlementExpense);
       
+      // Create notifications for settlement marked
+      try {
+        const users = await supabaseStorage.getUsers();
+        const fromUser = users.find(u => u.id === settlement.from);
+        const toUser = users.find(u => u.id === settlement.to);
+        const fromName = fromUser?.name || 'Someone';
+        const toName = toUser?.name || 'Someone';
+        const currency = group.currency || 'USD';
+        const amountFormatted = new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: currency,
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        }).format(settlement.amount);
+
+        // Notify the person who received the payment
+        await supabaseStorage.createNotification({
+          userId: settlement.to,
+          type: 'settlement_marked',
+          title: 'Settlement Received',
+          message: `${fromName} paid you ${amountFormatted} in "${group.name}"`,
+          groupId: group.id,
+          settlementId: updatedSettlement.id,
+        });
+
+        // Notify the person who made the payment (optional - they initiated it)
+        if (settlement.from !== currentUser.id) {
+          await supabaseStorage.createNotification({
+            userId: settlement.from,
+            type: 'settlement_marked',
+            title: 'Settlement Recorded',
+            message: `You paid ${toName} ${amountFormatted} in "${group.name}"`,
+            groupId: group.id,
+            settlementId: updatedSettlement.id,
+          });
+        }
+      } catch (notifError) {
+        console.error('Error creating settlement notifications:', notifError);
+        // Don't throw - notifications are non-critical
+      }
+      
       // Manually refresh data to ensure UI updates immediately
       await refreshGroupData();
       
