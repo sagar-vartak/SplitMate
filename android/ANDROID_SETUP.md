@@ -1,4 +1,6 @@
-# Android App Setup Guide
+# Android App Setup Guide (Quick Reference)
+
+> **📖 For detailed step-by-step instructions, see [ANDROID_STUDIO_GUIDE.md](./ANDROID_STUDIO_GUIDE.md)**
 
 This guide will help you set up and build the SplitMate Android app.
 

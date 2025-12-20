@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -21,14 +23,25 @@ android {
         }
 
         // Load Supabase credentials from local.properties
-        val localProperties = java.util.Properties()
         val localPropertiesFile = rootProject.file("local.properties")
+        var supabaseUrl = ""
+        var supabaseAnonKey = ""
+        
         if (localPropertiesFile.exists()) {
-            localPropertiesFile.inputStream().use { localProperties.load(it) }
+            try {
+                val props = Properties()
+                localPropertiesFile.inputStream().use { inputStream ->
+                    props.load(inputStream)
+                }
+                supabaseUrl = props.getProperty("SUPABASE_URL", "") ?: ""
+                supabaseAnonKey = props.getProperty("SUPABASE_ANON_KEY", "") ?: ""
+            } catch (e: Exception) {
+                println("Warning: Could not load local.properties: ${e.message}")
+            }
         }
 
-        buildConfigField("String", "SUPABASE_URL", "\"${localProperties.getProperty("SUPABASE_URL", "")}\"")
-        buildConfigField("String", "SUPABASE_ANON_KEY", "\"${localProperties.getProperty("SUPABASE_ANON_KEY", "")}\"")
+        buildConfigField("String", "SUPABASE_URL", "\"$supabaseUrl\"")
+        buildConfigField("String", "SUPABASE_ANON_KEY", "\"$supabaseAnonKey\"")
     }
 
     buildTypes {
@@ -119,4 +132,3 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
-
